@@ -1,12 +1,12 @@
 /**
  * services/company-service.js
  * 公司業務邏輯層
- * * @version 7.5.0 (Final Fix: Search, Filtering & Cache Control)
- * @date 2026-01-16
- * @description
- * * 1. [Feature] 實作 getCompanyListWithActivity 的記憶體過濾 (Search & Filter)。
- * * 2. [Strict] 確保只呼叫 Reader/Writer 存在的正確方法 (getCompanyList, createCompany 等)。
- * * 3. [Fix] 確保 CRUD 後正確執行 invalidateCache。
+ * * @version 7.5.1 (Fix: Match Frontend Contract Keys)
+ * @date 2026-01-20
+ * * @description
+ * * 1. [Fix] getCompanyDetails 回傳結構修正，對齊前端 companies.js 預期的 contacts, opportunities, potentialContacts。
+ * * 2. [Feature] 實作 getCompanyListWithActivity 的記憶體過濾 (Search & Filter)。
+ * * 3. [Strict] 確保只呼叫 Reader/Writer 存在的正確方法。
  */
 
 class CompanyService {
@@ -199,13 +199,15 @@ class CompanyService {
     // 3. 取得詳細資料 (聚合 Contact, Opportunity, Interaction, EventLog)
     async getCompanyDetails(companyName) {
         try {
-            // 並行讀取所有關聯表
-            const [allCompanies, allContacts, allOpportunities, allInteractions, allEventLogs] = await Promise.all([
+            // [Fix] 增加 contactReader.getContacts(3000) 以取得潛在客戶 (Raw Data)
+            // 這裡必須同時讀取「正式聯絡人」與「潛在聯絡人」
+            const [allCompanies, allContacts, allOpportunities, allInteractions, allEventLogs, allPotentialContacts] = await Promise.all([
                 this.companyReader.getCompanyList(),
                 this.contactReader.getContactList(),
                 this.opportunityReader.getOpportunities(),
                 this.interactionReader.getInteractions(),
-                this.eventLogReader.getEventLogs()
+                this.eventLogReader.getEventLogs(),
+                this.contactReader.getContacts(3000) // 讀取潛在客戶
             ]);
 
             // 尋找目標公司
@@ -213,10 +215,12 @@ class CompanyService {
             const companyInfo = allCompanies.find(c => this._normalizeCompanyName(c.companyName) === normalizedTarget);
 
             if (!companyInfo) {
+                // [Fix] 回傳結構需符合前端預期 (contacts, opportunities, potentialContacts)
                 return { 
                     companyInfo: null, 
-                    relatedContacts: [], 
-                    relatedOpportunities: [], 
+                    contacts: [], 
+                    opportunities: [], 
+                    potentialContacts: [],
                     interactions: [], 
                     eventLogs: [] 
                 };
@@ -225,26 +229,33 @@ class CompanyService {
             const companyId = companyInfo.companyId;
 
             // 聚合關聯資料
-            // 1. 聯絡人 (By CompanyID)
-            const relatedContacts = allContacts.filter(c => c.companyId === companyId);
             
-            // 2. 商機 (By CompanyName Fuzzy Match)
-            const relatedOpportunities = allOpportunities.filter(o => 
+            // 1. 正式聯絡人 (By CompanyID) - Key: contacts
+            const contacts = allContacts.filter(c => c.companyId === companyId);
+            
+            // 2. 商機 (By CompanyName Fuzzy Match) - Key: opportunities
+            const opportunities = allOpportunities.filter(o => 
                 this._normalizeCompanyName(o.customerCompany) === normalizedTarget
             );
-            const relatedOppIds = new Set(relatedOpportunities.map(o => o.opportunityId));
+            const relatedOppIds = new Set(opportunities.map(o => o.opportunityId));
             
-            // 3. 互動紀錄 (By CompanyID OR Related OpportunityID)
+            // 3. 互動紀錄
             const interactions = allInteractions.filter(i => 
                 i.companyId === companyId || (i.opportunityId && relatedOppIds.has(i.opportunityId))
             ).sort((a, b) => new Date(b.interactionTime || 0) - new Date(a.interactionTime || 0));
 
-            // 4. 系統日誌 (By CompanyID OR Related OpportunityID)
+            // 4. 系統日誌
             const eventLogs = allEventLogs.filter(e => 
                 e.companyId === companyId || (e.opportunityId && relatedOppIds.has(e.opportunityId))
             ).sort((a, b) => new Date(b.createdTime || 0) - new Date(a.createdTime || 0));
 
-            return { companyInfo, relatedContacts, relatedOpportunities, interactions, eventLogs };
+            // 5. [Fix] 潛在聯絡人 (By CompanyName Fuzzy Match) - Key: potentialContacts
+            const potentialContacts = allPotentialContacts.filter(pc => 
+                this._normalizeCompanyName(pc.company) === normalizedTarget
+            );
+
+            // [Fix] Key 名稱對齊前端: relatedContacts -> contacts, relatedOpportunities -> opportunities
+            return { companyInfo, contacts, opportunities, potentialContacts, interactions, eventLogs };
 
         } catch (error) {
             console.error(`[CompanyService] Details Error (${companyName}):`, error);

@@ -1,10 +1,10 @@
 // controllers/opportunity.controller.js
 /**
  * OpportunityController
- * * @version 5.1.0 (Phase 3 - Class Refactoring)
- * @date 2026-01-13
+ * * @version 5.2.0 (Phase 3 - Class Refactoring - Fix Layering)
+ * @date 2026-01-20
  * @description 機會案件控制器，最複雜的業務模組。
- * 採用混合注入模式：同時注入 Service 與 Reader/Writer 以維持所有功能。
+ * [Fix] 移除對 Reader/Writer 的直接依賴，全面透過 OpportunityService。
  */
 
 const { handleApiError } = require('../middleware/error.middleware');
@@ -14,8 +14,8 @@ class OpportunityController {
      * @param {OpportunityService} opportunityService
      * @param {WorkflowService} workflowService
      * @param {DashboardService} dashboardService
-     * @param {OpportunityReader} opportunityReader - 用於搜尋與統計
-     * @param {OpportunityWriter} opportunityWriter - 用於批量更新
+     * @param {OpportunityReader} opportunityReader - (Deprecated in Controller)
+     * @param {OpportunityWriter} opportunityWriter - (Deprecated in Controller)
      */
     constructor(opportunityService, workflowService, dashboardService, opportunityReader, opportunityWriter) {
         this.opportunityService = opportunityService;
@@ -38,7 +38,8 @@ class OpportunityController {
     // GET /api/opportunities/by-county
     getOpportunitiesByCounty = async (req, res) => {
         try {
-            const result = await this.opportunityReader.getOpportunitiesByCounty(req.query.opportunityType);
+            // [Fix] Layering: Call Service instead of Reader
+            const result = await this.opportunityService.getOpportunitiesByCounty(req.query.opportunityType);
             res.json(result);
         } catch (error) {
             handleApiError(res, error, 'Opp By County');
@@ -52,7 +53,8 @@ class OpportunityController {
             const filters = { assignee, type, stage };
             Object.keys(filters).forEach(key => (filters[key] === undefined || filters[key] === '') && delete filters[key]);
             
-            const result = await this.opportunityReader.searchOpportunities(q, parseInt(page), filters);
+            // [Fix] Layering: Call Service instead of Reader
+            const result = await this.opportunityService.searchOpportunities(q, parseInt(page), filters);
             res.json(result);
         } catch (error) {
             handleApiError(res, error, 'Search Opps');
@@ -83,8 +85,8 @@ class OpportunityController {
     // PUT /api/opportunities/batch
     batchUpdateOpportunities = async (req, res) => {
         try {
-            // Service 層未實作批量更新，直接呼叫 Writer
-            const result = await this.opportunityWriter.batchUpdateOpportunities(req.body.updates);
+            // [Fix] Layering: Call Service instead of Writer
+            const result = await this.opportunityService.batchUpdateOpportunities(req.body.updates);
             res.json(result);
         } catch (error) {
             handleApiError(res, error, 'Batch Update Opps');

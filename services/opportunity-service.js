@@ -1,8 +1,8 @@
 /**
  * services/opportunity-service.js
  * 機會案件業務邏輯層 (Service Layer)
- * * @version 6.0.0 (Added Date Range Query for Weekly Module)
- * @date 2026-01-13
+ * * @version 6.1.0 (Fix: Layering Compliance - Proxy Methods)
+ * @date 2026-01-20
  * @description 負責處理與「機會案件」相關的 CRUD、關聯管理與自動日誌。
  * 依賴注入：Readers (Opportunity, Interaction, EventLog, Contact, System) & Writers (Company, Contact, Opportunity, Interaction) & Config
  */
@@ -413,6 +413,29 @@ class OpportunityService {
             // 發生錯誤時回傳空陣列，避免中斷呼叫方 (如週報) 的主要流程
             return [];
         }
+    }
+
+    // --- Phase 2-B Fix: Proxy Methods for Layering Compliance ---
+
+    /**
+     * [Proxy] 獲取縣市分佈統計 (原 Controller 直呼 Reader)
+     */
+    async getOpportunitiesByCounty(opportunityType) {
+        return await this.opportunityReader.getOpportunitiesByCounty(opportunityType);
+    }
+
+    /**
+     * [Proxy] 搜尋機會案件 (原 Controller 直呼 Reader)
+     */
+    async searchOpportunities(query, page, filters) {
+        return await this.opportunityReader.searchOpportunities(query, page, filters);
+    }
+
+    /**
+     * [Proxy] 批量更新機會案件 (原 Controller 直呼 Writer)
+     */
+    async batchUpdateOpportunities(updates) {
+        return await this.opportunityWriter.batchUpdateOpportunities(updates);
     }
 }
 
