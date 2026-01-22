@@ -1,9 +1,9 @@
 /**
  * services/event-log-service.js
  * 事件紀錄服務邏輯
- * * @version 5.0.0 (Phase 5 Refactoring)
- * @date 2026-01-09
- * @description 負責各類型事件 (General, IOT, DT, DX) 的 CRUD 與資料聚合。
+ * * @version 5.0.3 (Phase 5 Refactoring)
+ * @date 2026-01-22
+ * @description 負責各類型事件 (General, IOT, DT, DX) 的 CRUD 與資料聚合。[Fix] updateEventLog Proxy: Resolve eventId to rowIndex automatically.
  * 依賴注入：EventLogReader, EventLogWriter, OpportunityReader, CompanyReader, SystemReader, CalendarService
  */
 
@@ -117,6 +117,38 @@ class EventLogService {
             console.error(`[EventLogService] updateEvent Error (Row: ${rowIndex}):`, error);
             throw error;
         }
+    }
+
+    /**
+     * [Proxy] 兼容舊 Controller 呼叫 updateEventLog
+     * [Fix] 自動偵測並轉換 eventId 為 rowIndex
+     * @param {string|number} idOrRowIndex - 可能是 rowIndex 或 eventId
+     * @param {Object} data 
+     * @param {string} modifier 
+     */
+    async updateEventLog(idOrRowIndex, data, modifier) {
+        let rowIndex = idOrRowIndex;
+
+        // [Fix] 若傳入的是 Event ID (非純數字)，則先查找對應的 Row Index
+        if (typeof idOrRowIndex === 'string' && isNaN(Number(idOrRowIndex))) {
+            const logs = await this.eventReader.getEventLogs();
+            const target = logs.find(log => log.eventId === idOrRowIndex);
+            
+            if (!target || !target.rowIndex) {
+                throw new Error(`Update Failed: Event ID '${idOrRowIndex}' not found.`);
+            }
+            rowIndex = target.rowIndex;
+        }
+
+        // [Safety] 正規化與驗證
+        rowIndex = Number(rowIndex);
+        if (!Number.isInteger(rowIndex)) {
+            throw new Error('Invalid resolved rowIndex');
+        }
+
+        // 將字串包裝成物件以符合 updateEvent 簽章
+        const user = { displayName: modifier };
+        return await this.updateEvent(rowIndex, data, user);
     }
 
     /**

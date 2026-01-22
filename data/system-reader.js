@@ -1,9 +1,9 @@
 /**
  * data/system-reader.js
  * 專門負責讀取系統級資料的類別 (系統設定、使用者)
- * * @version 5.0.0 (Phase 5 Refactoring)
- * @date 2026-01-09
- * @description 實作 Strict Mode 依賴注入。
+ * * @version 5.0.2 (Phase B - Encapsulation Getter)
+ * @date 2026-01-22
+ * @description 新增 getLastWriteTimestamp 以支援 SystemService 存取狀態。
  */
 
 const BaseReader = require('./base-reader');
@@ -11,13 +11,18 @@ const BaseReader = require('./base-reader');
 class SystemReader extends BaseReader {
     /**
      * @param {Object} sheets - Google Sheets API Client
-     * @param {string} spreadsheetId - [Required] 指定要讀取的 Sheet ID (可能是 SYSTEM_ID 或 AUTH_ID)
-     * 注意：SystemReader 比較特殊，它可能同時需要讀 System Config 和 User List。
-     * 在 Phase 5 初期，我們讓它接收一個主 ID，但如果 User List 在不同 Sheet，需要特別處理。
-     * 目前為了相容，我們先接收一個 ID，但在 getUsers() 時判斷是否需要切換。
+     * @param {string} spreadsheetId - [Required] 指定要讀取的 Sheet ID
      */
     constructor(sheets, spreadsheetId) {
         super(sheets, spreadsheetId);
+    }
+
+    /**
+     * [New] 取得全域最後寫入時間戳 (封裝 Cache 存取)
+     * @returns {string|null} ISO String
+     */
+    getLastWriteTimestamp() {
+        return this.cache._globalLastWrite ? this.cache._globalLastWrite.data : null;
     }
 
     /**
@@ -34,14 +39,13 @@ class SystemReader extends BaseReader {
 
         try {
             const response = await this.sheets.spreadsheets.values.get({
-                spreadsheetId: this.targetSpreadsheetId, // 使用注入的 ID (應為 SYSTEM_ID)
+                spreadsheetId: this.targetSpreadsheetId, 
                 range: `${this.config.SHEETS.SYSTEM_CONFIG}!A:I`,
             });
             
             const rows = response.data.values || [];
             const settings = {};
             
-            // 初始化預設值
             if (!settings['事件類型']) {
                 settings['事件類型'] = [
                     { value: 'general', note: '一般', order: 1, color: '#6c757d' },
@@ -97,15 +101,9 @@ class SystemReader extends BaseReader {
     async getUsers() {
         const cacheKey = 'users';
         const range = '使用者名冊!A:D';
-        
-        // ★★★ 特別處理：Auth 資料可能在另一個 Sheet ★★★
-        // 如果 config.IDS.AUTH 存在且不同於當前的 targetSpreadsheetId，我們優先使用 Config 定義的 Auth ID。
-        // 但依照依賴注入原則，最好是由 Container 注入 AuthReader。
-        // 為了不拆分 SystemReader，這裡我們暫時允許它讀取 Global Config 的 AUTH ID。
-        // 在嚴格模式下，this.config.IDS.AUTH 應該是存在的。
         const targetSheetId = this.config.IDS.AUTH || this.targetSpreadsheetId;
-
         const now = Date.now();
+        
         if (this.cache[cacheKey] && this.cache[cacheKey].data && (now - this.cache[cacheKey].timestamp < this.CACHE_DURATION)) {
             return this.cache[cacheKey].data;
         }
@@ -113,7 +111,6 @@ class SystemReader extends BaseReader {
         console.log(`🔐 [Auth] 讀取使用者名冊 (Sheet ID: ...${targetSheetId.slice(-6)})...`);
 
         try {
-            // 注意：這裡我們使用 targetSheetId 而不是 this.targetSpreadsheetId
             const response = await this.sheets.spreadsheets.values.get({
                 spreadsheetId: targetSheetId,
                 range: range,

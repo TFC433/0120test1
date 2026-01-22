@@ -1,19 +1,32 @@
-// views/scripts/event-report-manager.js
+// public/scripts/events/event-report-manager.js
 // 職責：專門負責「查看報告」彈窗的顯示、渲染與匯出功能
 // (V6 - 包含智慧職稱關聯、動態標頭色、膠囊顯示)
+/**
+ * @version 1.0.3
+ * @date 2026-01-22
+ * @description [Forensics Probe] Added debug counters and global export.
+ */
+
+// [Forensics Probe] Debug Counter
+window._DEBUG_SHOW_EVENT_REPORT_COUNT ||= 0;
 
 /**
  * 顯示單筆事件的詳細報告彈出視窗
  * @param {string} eventId - 要顯示報告的事件 ID
  */
 async function showEventLogReport(eventId) {
+    // [Forensics Probe] Trace call
+    window._DEBUG_SHOW_EVENT_REPORT_COUNT++;
+    console.log(`[Forensics] showEventLogReport called (Count: ${window._DEBUG_SHOW_EVENT_REPORT_COUNT})`, { eventId });
+    console.trace('[Forensics] showEventLogReport trace');
+
     let modalContent = document.getElementById('event-log-report-content');
     
     // 確保 Modal 結構存在
     if (!modalContent) {
         const modalContainer = document.getElementById('modal-container');
         try {
-            // 【修改】路徑修正：指向 /views/event-log-list.html
+            // 【修改】路徑修正：指向 /views/event-log-list.html (保留原始路徑)
             const modalViewsHtml = await fetch('/views/event-log-list.html').then(res => res.text());
             modalContainer.insertAdjacentHTML('beforeend', modalViewsHtml);
             modalContent = document.getElementById('event-log-report-content');
@@ -304,3 +317,6 @@ async function exportReportToPdf(event) {
         hideLoading();
     }
 }
+
+// Ensure global accessibility
+window.showEventLogReport = showEventLogReport;

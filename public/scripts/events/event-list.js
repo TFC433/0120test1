@@ -1,11 +1,20 @@
-// views/scripts/event-list.js
+// public/scripts/events/event-list.js
 // 職責：渲染並管理「事件紀錄」頁面的主列表 (含搜尋、篩選、統計、圖示化操作)
 // (Systematic Refactor: Event Delegation - 統一事件處理機制)
+/**
+ * @version 1.0.3
+ * @date 2026-01-22
+ * @description [Forensics Probe] Added debug counters and call traces.
+ */
 
 // 模組內部狀態
 let _fullEventData = [];
 let _eventFilters = { type: 'all', time: 'all', creator: 'all' };
 let _eventSearchQuery = '';
+
+// [Forensics Probe] Debug Counters
+window._DEBUG_EVENT_LIST_BIND_COUNT ||= 0;
+window._DEBUG_EVENT_LIST_CLICK_COUNT ||= 0;
 
 /**
  * 初始化並渲染事件紀錄列表介面
@@ -62,6 +71,16 @@ function renderEventLogList(container, eventList) {
     // 4. 綁定事件委派 (針對剛建立的 Widget Root)
     const widgetRoot = container.querySelector('.event-list-root');
     if (widgetRoot) {
+        // [Forensics Probe] Log binding
+        window._DEBUG_EVENT_LIST_BIND_COUNT++;
+        console.log(`[Forensics] BIND event-list click (Count: ${window._DEBUG_EVENT_LIST_BIND_COUNT})`, {
+            container: container,
+            widgetRoot: widgetRoot,
+            hasOldListener: !!widgetRoot.onclick // simple check
+        });
+        // print stack trace to see who called render
+        console.trace('[Forensics] BIND Trace');
+
         // 確保移除舊的 (雖然後面 innerHTML 覆蓋了 DOM，但好習慣)
         widgetRoot.removeEventListener('click', handleEventListClick);
         widgetRoot.addEventListener('click', handleEventListClick);
@@ -97,7 +116,16 @@ function renderEventLogList(container, eventList) {
  * 事件處理中心 (Delegation Hub)
  */
 function handleEventListClick(e) {
+    // [Forensics Probe] Log click firing
+    window._DEBUG_EVENT_LIST_CLICK_COUNT++;
     const btn = e.target.closest('[data-action]');
+    console.log(`[Forensics] CLICK fired (Total: ${window._DEBUG_EVENT_LIST_CLICK_COUNT})`, {
+        target: e.target,
+        btn: btn,
+        action: btn ? btn.dataset.action : 'N/A',
+        eventId: btn ? btn.dataset.id : 'N/A'
+    });
+
     if (!btn) return;
 
     const action = btn.dataset.action;
@@ -138,10 +166,6 @@ function handleEventListClick(e) {
             
         case 'delete-event':
              // 呼叫刪除邏輯 (假設使用 EventEditorStandalone 中的邏輯或全域邏輯，這裡示範呼叫全域刪除)
-             // 實際上 EventEditorStandalone._confirmDelete 比較合適，但它是內部的。
-             // 這裡我們模擬開啟編輯器後刪除，或者直接呼叫 API。
-             // 為了簡單起見，我們開啟編輯器讓使用者刪除，或者如果系統有全域 deleteEvent...
-             // 這裡我們直接打開編輯器即可，因為編輯器有刪除按鈕
              if (window.EventEditorStandalone && window.EventEditorStandalone.open) {
                 window.EventEditorStandalone.open(payload.id);
             }
@@ -278,7 +302,6 @@ function _filterAndRenderEvents() {
                             <circle cx="12" cy="12" r="3"></circle>
                         </svg>
                     </button>
-                    <!-- Added Edit Action -->
                     <button class="btn-mini-view" title="編輯" 
                             data-action="edit-event" 
                             data-id="${event.eventId}">

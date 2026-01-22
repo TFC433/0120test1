@@ -1,6 +1,14 @@
 // public/scripts/events/event-editor-standalone.js
 // 職責：獨立的事件編輯器控制器 (含 DT Placeholders)
 // (Refactored: Fix Zero-Dimension Trap via ResizeObserver - Loop Safe)
+/**
+ * @version 1.0.6
+ * @date 2026-01-22
+ * @description [Fix] v1.0.5 baseline + Revert IoT deviceScale back to textarea (no UX regression).
+ */
+
+// [Forensics Probe] Debug Counter
+window._DEBUG_EDITOR_OPEN_COUNT ||= 0;
 
 const EventEditorStandalone = (() => {
     let _modal, _form, _inputs = {};
@@ -11,7 +19,11 @@ const EventEditorStandalone = (() => {
     };
     
     let _isInitialized = false;
-    let _resizeObserver = null; 
+    let _resizeObserver = null;
+    
+    // [Fix] State flags for scroll lock and re-entry guard
+    let _isOpening = false;
+    let _originalOverflow = { body: '', html: '' };
 
     const DEFAULT_OPTIONS = {
         lineFeatures: ['工具機', 'ROBOT', '傳產機', 'PLC'],
@@ -118,37 +130,84 @@ const EventEditorStandalone = (() => {
         element.style.height = element.scrollHeight + 'px';
     }
 
-    async function open(eventId) {
-        await _ensureTemplateLoaded();
-        _init();
-        
-        if (!_modal || !_form) {
-            console.error('無法初始化編輯器 DOM');
-            showNotification('編輯器初始化失敗', 'error');
-            return;
-        }
+    // [Fix] Scroll locking helpers
+    function _lockScroll() {
+        _originalOverflow.body = document.body.style.overflow;
+        _originalOverflow.html = document.documentElement.style.overflow;
+        document.body.style.overflow = 'hidden';
+        document.documentElement.style.overflow = 'hidden';
+    }
 
-        _resetForm();
-        _modal.style.display = 'block';
-        
+    function _unlockScroll() {
+        document.body.style.overflow = _originalOverflow.body;
+        document.documentElement.style.overflow = _originalOverflow.html;
+    }
+
+    async function open(eventId) {
+        // [Fix] Anti-reentry guard
+        if (_isOpening) return;
+        _isOpening = true;
+
+        // [Forensics Probe] Trace call
+        window._DEBUG_EDITOR_OPEN_COUNT++;
+        console.log(`[Forensics] EventEditorStandalone.open called (Count: ${window._DEBUG_EDITOR_OPEN_COUNT})`, { eventId });
+        console.trace('[Forensics] EventEditorStandalone.open trace');
+
         try {
+            await _ensureTemplateLoaded();
+            _init();
+            
+            if (!_modal || !_form) {
+                console.error('無法初始化編輯器 DOM');
+                showNotification('編輯器初始化失敗', 'error');
+                return;
+            }
+
+            _resetForm();
+            _modal.style.display = 'block';
+            _lockScroll(); // [Fix] Lock scroll on open
+            
             _setLoading(true, '載入中...');
-            const result = await authedFetch(`/api/events/${eventId}`);
-            if (result.success) {
-                const eventData = result.data;
+
+            // 1. Main Event Data Fetch
+            // If this fails, we MUST close because we have nothing to edit.
+            let eventData = null;
+            try {
+                const result = await authedFetch(`/api/events/${eventId}`);
+                if (result.success) {
+                    eventData = result.data;
+                } else {
+                    throw new Error(result.error || 'Unknown Error');
+                }
+            } catch (fetchError) {
+                console.error('Main event fetch failed:', fetchError);
+                showNotification('無法載入事件: ' + fetchError.message, 'error');
+                _close();
+                return; // Critical failure, stop here.
+            }
+
+            // 2. Setup Delete Button (UI)
+            if (_inputs.deleteBtn) {
                 _inputs.deleteBtn.style.display = 'block';
                 _inputs.deleteBtn.onclick = () => _confirmDelete(eventData.eventId, eventData.eventName);
-                await _populateForm(eventData);
-            } else {
-                showNotification('無法載入事件: ' + result.error, 'error');
-                _close();
             }
+
+            // 3. Populate Form with Robust Error Handling
+            // [Fix] If populate fails (e.g. linked opportunity 500), catch it and keep editor open.
+            try {
+                await _populateForm(eventData);
+            } catch (populateError) {
+                console.error('[EventEditor] Partial population failure:', populateError);
+                showNotification('關聯資料載入異常，但您仍可編輯主要內容', 'warning');
+            }
+
         } catch (e) {
             console.error(e);
-            showNotification('發生錯誤', 'error');
+            showNotification('發生未預期錯誤', 'error');
             _close();
         } finally {
             _setLoading(false);
+            _isOpening = false; // [Fix] Release guard
         }
     }
 
@@ -289,8 +348,8 @@ const EventEditorStandalone = (() => {
 
     function _renderIoTFields(data) {
         const container = _inputs.specificContainer;
-        
-        // ✅ 修正：將「設備規模」改用 _createTextareaHTML (原本是 _createInputHTML)
+
+        // ✅ v1.0.6：避免 UX 退化 — 設備規模改回 textarea（承襲你 v1.0.3 的修正）
         container.innerHTML += _createTextareaHTML('iot_deviceScale', '設備規模', data.iot_deviceScale, '例：機台數量 50 台、PLC 型號...');
 
         const lineFeaturesVal = (data.iot_lineFeatures || '').split(',').map(s=>s.trim());
@@ -438,6 +497,7 @@ const EventEditorStandalone = (() => {
     function _close() { 
         if (_modal) _modal.style.display = 'none'; 
         if (_resizeObserver) _resizeObserver.disconnect();
+        _unlockScroll(); // [Fix] Restore scroll on close
     }
     
     function _resetForm() {
@@ -451,6 +511,7 @@ const EventEditorStandalone = (() => {
         _inputs.specificWrapper.style.display = 'none';
         _inputs.workspaceGrid.classList.remove('has-sidebar');
     }
+
     function _setLoading(isLoading, text) {
         if (!_inputs.submitBtn) return;
         _inputs.submitBtn.disabled = isLoading;

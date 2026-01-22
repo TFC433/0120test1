@@ -1,9 +1,9 @@
 /**
  * services/service-container.js
  * 服務容器 (IoC Container)
- * * @version 7.0.3 (Fix: Export ContactWriter)
- * @date 2026-01-15
- * @description [Fix] 確保 contactWriter 被正確匯出，解決 Controller 注入失敗的問題。
+ * * @version 7.2.0 (Phase B - SystemService Injection)
+ * @date 2026-01-22
+ * @description [Fix] 注入 SystemService，完成 System 模組分層。
  */
 
 const config = require('../config');
@@ -48,6 +48,9 @@ const WeeklyBusinessService = require('./weekly-business-service');
 const WorkflowService = require('./workflow-service');
 const ProductService = require('./product-service');
 const AnnouncementService = require('./announcement-service'); 
+const EventService = require('./event-service');
+// [New] Import SystemService
+const SystemService = require('./system-service');
 
 // --- Import Controllers (Class Based) ---
 const AuthController = require('../controllers/auth.controller');
@@ -65,7 +68,7 @@ let services = null;
 async function initializeServices() {
     if (services) return services;
 
-    console.log('🚀 [System] 正在初始化 Service Container (v7.0.3 DI Fix)...');
+    console.log('🚀 [System] 正在初始化 Service Container (v7.2.0 SystemService)...');
 
     try {
         // 1. Infrastructure
@@ -105,6 +108,9 @@ async function initializeServices() {
             announcementReader,
             announcementWriter
         });
+
+        // [New] System Service
+        const systemService = new SystemService(systemReader, systemWriter);
 
         const companyService = new CompanyService(
             companyReader, companyWriter, contactReader, contactWriter,
@@ -150,9 +156,21 @@ async function initializeServices() {
             contactService
         );
 
+        const eventService = new EventService(
+            calendarService, 
+            interactionService, 
+            weeklyBusinessService, 
+            opportunityService, 
+            config, 
+            dateHelpers
+        );
+
         // 5. Controllers
         const authController = new AuthController(authService);
-        const systemController = new SystemController(systemReader, systemWriter, dashboardService);
+        
+        // [Fix] Inject SystemService instead of Reader/Writer
+        const systemController = new SystemController(systemService, dashboardService);
+        
         const announcementController = new AnnouncementController(announcementService);
         const contactController = new ContactController(contactService, workflowService, contactWriter);
         const companyController = new CompanyController(companyService);
@@ -174,6 +192,9 @@ async function initializeServices() {
             weeklyBusinessService, salesAnalysisService, dashboardService,
             workflowService, productService, 
             announcementService,
+            eventService,
+            // [New] Export SystemService
+            systemService,
 
             // Controllers
             authController,
@@ -186,13 +207,13 @@ async function initializeServices() {
             productController,
             weeklyController,
 
-            // ★★★ 修正點：必須匯出 Writer，因為 LineController 需要直接使用它 ★★★
+            // Writers (Legacy compatibility)
             contactWriter,
-            
-            // Readers/Writers (for legacy compatibility)
             weeklyBusinessReader: weeklyReader,
             weeklyBusinessWriter: weeklyWriter,
-            systemReader, systemWriter
+            systemReader, systemWriter,
+            interactionWriter,
+            eventLogReader
         };
 
         return services;
