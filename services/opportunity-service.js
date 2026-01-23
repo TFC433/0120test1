@@ -1,4 +1,12 @@
 /**
+ * TFC CRM Refactor
+ * Date: 2026-01-23
+ * Version: v7.2.x (Phase 5 / Standard A - Round 3 Completed)
+ * Module: Opportunity
+ * Contract: v1.0 (No API/UI regression)
+ */
+
+/**
  * services/opportunity-service.js
  * 機會案件業務邏輯層 (Service Layer)
  * * @version 6.1.0 (Fix: Layering Compliance - Proxy Methods)
@@ -108,7 +116,7 @@ class OpportunityService {
                 allOpportunities, 
                 interactionsFromCache, 
                 eventLogsFromCache, 
-                linkedContactsFromCache,
+                linkedContactsFromCache, 
                 allPotentialContacts
             ] = await Promise.all([
                 this.opportunityReader.getOpportunities(),
@@ -415,20 +423,134 @@ class OpportunityService {
         }
     }
 
-    // --- Phase 2-B Fix: Proxy Methods for Layering Compliance ---
+    // --- Phase 5: Standard A Compliance (Round 3) ---
 
     /**
-     * [Proxy] 獲取縣市分佈統計 (原 Controller 直呼 Reader)
+     * [Standard A] 獲取縣市分佈統計
+     * * 邏輯已移至 Service 層 (不再 Proxy Reader)
+     * * 透過 DI 注入的 companyReader 取得公司列表 (消除 Cross-Reader Require)
      */
-    async getOpportunitiesByCounty(opportunityType) {
-        return await this.opportunityReader.getOpportunitiesByCounty(opportunityType);
+    async getOpportunitiesByCounty(opportunityType = null) {
+        try {
+            // 1. Fetch Raw Data in Parallel
+            const [allOpportunities, companies] = await Promise.all([
+                this.opportunityReader.getOpportunities(),
+                this.companyReader.getCompanyList() // Via DI
+            ]);
+
+            // 2. Filter Archived (Business Logic)
+            const activeOpportunities = allOpportunities.filter(opp => 
+                opp.currentStatus !== this.config.CONSTANTS.OPPORTUNITY_STATUS.ARCHIVED
+            );
+
+            // 3. Filter by Type (Business Logic)
+            let filteredOpportunities = opportunityType
+                ? activeOpportunities.filter(opp => opp.opportunityType === opportunityType)
+                : activeOpportunities;
+            
+            // 4. JOIN Logic (Company Name -> County)
+            // Normalization helper
+            const normalize = (name) => name ? name.toLowerCase().trim() : '';
+            const companyToCountyMap = new Map();
+            
+            (companies || []).forEach(c => {
+                if (c.companyName) {
+                    companyToCountyMap.set(normalize(c.companyName), c.county);
+                }
+            });
+
+            // 5. Aggregation (Count by County)
+            const countyCounts = {};
+            filteredOpportunities.forEach(opp => {
+                // Try to find county from company map
+                const county = companyToCountyMap.get(normalize(opp.customerCompany));
+                if (county) {
+                    countyCounts[county] = (countyCounts[county] || 0) + 1;
+                }
+            });
+
+            // 6. Return standard shape
+            return Object.entries(countyCounts).map(([county, count]) => ({ county, count }));
+
+        } catch (error) {
+            console.error('❌ [OpportunityService] getOpportunitiesByCounty 錯誤:', error);
+            return [];
+        }
     }
 
     /**
-     * [Proxy] 搜尋機會案件 (原 Controller 直呼 Reader)
+     * [Standard A] 搜尋機會案件
+     * * 邏輯已移至 Service 層 (不再 Proxy Reader)
+     * * 包含: 狀態過濾、排序、關鍵字搜尋、屬性篩選、分頁
      */
     async searchOpportunities(query, page, filters) {
-        return await this.opportunityReader.searchOpportunities(query, page, filters);
+        try {
+            // 1. Fetch Raw Data
+            const allOpportunities = await this.opportunityReader.getOpportunities();
+            
+            // 2. Filter Archived (Business Logic)
+            let opportunities = allOpportunities.filter(o => 
+                o.currentStatus !== this.config.CONSTANTS.OPPORTUNITY_STATUS.ARCHIVED
+            );
+
+            // 3. Sort (Business Logic: lastUpdateTime or createdTime DESC)
+            opportunities.sort((a, b) => {
+                const timeA = new Date(a.lastUpdateTime || a.createdTime).getTime();
+                const timeB = new Date(b.lastUpdateTime || b.createdTime).getTime();
+                return timeB - timeA;
+            });
+
+            // 4. Search (Query)
+            if (query) {
+                const searchTerm = query.toLowerCase().trim();
+                opportunities = opportunities.filter(o => {
+                    // 若搜尋字串以 "opp" 開頭，則進行 ID 精準比對
+                    if (searchTerm.startsWith('opp') && o.opportunityId && o.opportunityId.toLowerCase() === searchTerm) {
+                        return true;
+                    }
+                    // 否則進行名稱或公司模糊搜尋
+                    const nameMatch = o.opportunityName && o.opportunityName.toLowerCase().includes(searchTerm);
+                    const companyMatch = o.customerCompany && o.customerCompany.toLowerCase().includes(searchTerm);
+                    return nameMatch || companyMatch;
+                });
+            }
+
+            // 5. Filters (Attributes)
+            if (filters) {
+                if (filters.assignee) opportunities = opportunities.filter(o => o.assignee === filters.assignee);
+                if (filters.type) opportunities = opportunities.filter(o => o.opportunityType === filters.type);
+                if (filters.stage) opportunities = opportunities.filter(o => o.currentStage === filters.stage);
+            }
+
+            // 6. Pagination & Response Shape
+            // 若 page <= 0，回傳純陣列 (Legacy behavior compatibility)
+            if (!page || page <= 0) {
+                return opportunities;
+            }
+
+            const pageSize = this.config.PAGINATION.OPPORTUNITIES_PER_PAGE;
+            const totalItems = opportunities.length;
+            const totalPages = Math.ceil(totalItems / pageSize);
+            const currentPage = parseInt(page);
+            const startIndex = (currentPage - 1) * pageSize;
+            
+            const paginatedItems = opportunities.slice(startIndex, startIndex + pageSize);
+
+            return {
+                data: paginatedItems,
+                pagination: { 
+                    current: currentPage, 
+                    total: totalPages, 
+                    totalItems: totalItems, 
+                    hasNext: currentPage < totalPages, 
+                    hasPrev: currentPage > 1 
+                }
+            };
+
+        } catch (error) {
+             console.error('❌ [OpportunityService] searchOpportunities 錯誤:', error);
+             throw error;
+        }
     }
 
     /**
