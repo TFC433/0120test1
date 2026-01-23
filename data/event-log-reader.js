@@ -1,9 +1,9 @@
 /**
  * data/event-log-reader.js
  * 專門負責讀取所有與「事件紀錄 (Event Logs)」相關資料的類別
- * * @version 5.0.0 (Phase 5 Refactoring)
- * @date 2026-01-09
- * @description 實作 Strict Mode 依賴注入，並在 Constructor 中正確初始化相依的 Readers。
+ * @version 5.1.0 (Phase 5 - Standard A Refactoring)
+ * @date 2026-01-23
+ * @description [Standard A] 移除 Cross-Reader 依賴與業務邏輯，僅負責 Raw Data Access。
  */
 
 const BaseReader = require('./base-reader');
@@ -65,21 +65,15 @@ class EventLogReader extends BaseReader {
      */
     constructor(sheets, spreadsheetId) {
         super(sheets, spreadsheetId);
-        
-        const OpportunityReader = require('./opportunity-reader');
-        const CompanyReader = require('./company-reader');
-        
-        // ★★★ 依賴注入修正：將接收到的 spreadsheetId 傳遞給子 Reader ★★★
-        this.opportunityReader = new OpportunityReader(sheets, spreadsheetId);
-        this.companyReader = new CompanyReader(sheets, spreadsheetId);
+        // [Standard A] 禁止在 Reader 內 require/new 其他 Reader
     }
 
     async _fetchLegacyEventData() {
         try {
             const range = `事件紀錄總表!A:Y`;
             const response = await this.sheets.spreadsheets.values.get({
-                spreadsheetId: this.targetSpreadsheetId, // 使用注入 ID
-                range: range,
+                spreadsheetId: this.targetSpreadsheetId,
+                range
             });
 
             const rows = response.data.values || [];
@@ -93,26 +87,21 @@ class EventLogReader extends BaseReader {
             ];
 
             return rows.slice(1).map((row, index) => {
-                const log = { rowIndex: index + 2, eventType: 'legacy', editCount: 1 }; 
-                
+                const log = { rowIndex: index + 2, eventType: 'legacy', editCount: 1 };
+
                 legacyHeadersInOrder.forEach((header, i) => {
                     const key = HEADER_TO_KEY_MAP[header];
-                    if (key) {
-                        log[key] = row[i] || '';
-                    }
+                    if (key) log[key] = row[i] || '';
                 });
-                
+
                 const lastUpdateTime = row[24];
                 log.lastModifiedTime = lastUpdateTime || log.createdTime;
                 log.iot_deviceScale = log.potentialQuantity || log.hardwareScale;
 
                 return log;
             });
-
         } catch (error) {
-            if (error.code === 400 && error.message.includes('Unable to parse range')) {
-                return [];
-            }
+            if (error.code === 400 && String(error.message || '').includes('Unable to parse range')) return [];
             console.warn(`⚠️ 讀取舊版事件工作表失敗: ${error.message}`);
             return [];
         }
@@ -125,7 +114,7 @@ class EventLogReader extends BaseReader {
         const range = `${sheetName}!A:${lastColumn}`;
 
         const rowParser = (row, index) => {
-            const log = { rowIndex: index + 2, eventType: eventType };
+            const log = { rowIndex: index + 2, eventType };
 
             allHeaders.forEach((header, i) => {
                 let key;
@@ -135,24 +124,24 @@ class EventLogReader extends BaseReader {
                     key = HEADER_TO_KEY_MAP[header];
                 }
 
-                if (key) {
-                    log[key] = row[i] || '';
-                }
+                if (key) log[key] = row[i] || '';
             });
+
             return log;
         };
-        
+
         try {
             const response = await this.sheets.spreadsheets.values.get({
-                spreadsheetId: this.targetSpreadsheetId, // 使用注入 ID
-                range: range,
+                spreadsheetId: this.targetSpreadsheetId,
+                range
             });
+
             const rows = response.data.values || [];
             if (rows.length <= 1) return [];
             return rows.slice(1).map(rowParser);
         } catch (error) {
-            if (error.code !== 400 || !error.message.includes('Unable to parse range')) {
-                 console.warn(`⚠️ 讀取事件工作表 "${sheetName}" 失敗: ${error.message}`);
+            if (error.code !== 400 || !String(error.message || '').includes('Unable to parse range')) {
+                console.warn(`⚠️ 讀取事件工作表 "${sheetName}" 失敗: ${error.message}`);
             }
             return [];
         }
@@ -161,7 +150,12 @@ class EventLogReader extends BaseReader {
     async getEventLogs() {
         const cacheKey = 'eventLogs';
         const now = Date.now();
-        if (this.cache[cacheKey] && this.cache[cacheKey].data && (now - this.cache[cacheKey].timestamp < this.CACHE_DURATION)) {
+
+        if (
+            this.cache[cacheKey] &&
+            this.cache[cacheKey].data &&
+            (now - this.cache[cacheKey].timestamp < this.CACHE_DURATION)
+        ) {
             console.log(`✅ [Cache] 從快取讀取 ${cacheKey}...`);
             return this.cache[cacheKey].data;
         }
@@ -176,40 +170,21 @@ class EventLogReader extends BaseReader {
             this._fetchEventData('general', S.EVENT_LOGS_GENERAL),
             this._fetchEventData('iot', S.EVENT_LOGS_IOT, F.EVENT_LOG_IOT_FIELDS),
             this._fetchEventData('dt', S.EVENT_LOGS_DT, F.EVENT_LOG_DT_FIELDS),
-            this._fetchEventData('dx', S.EVENT_LOGS_DX),
+            this._fetchEventData('dx', S.EVENT_LOGS_DX)
         ]);
 
         const allLogs = [...legacyLogs, ...generalLogs, ...iotLogs, ...dtLogs, ...dxLogs];
-        
+
         this.cache[cacheKey] = { data: allLogs, timestamp: now };
-        
         return allLogs;
     }
 
+    /**
+     * [Standard A] Raw only：只查找 eventId，不做 Join
+     */
     async getEventLogById(eventId) {
         const allLogs = await this.getEventLogs();
-        const log = allLogs.find(log => log.eventId === eventId);
-
-        if (!log) return null;
-
-        try {
-            const [allOpportunities, allCompanies] = await Promise.all([
-                this.opportunityReader.getOpportunities(),
-                this.companyReader.getCompanyList()
-            ]);
-
-            if (log.opportunityId) {
-                const relatedOpportunity = allOpportunities.find(opp => opp.opportunityId === log.opportunityId);
-                log.opportunityName = relatedOpportunity ? relatedOpportunity.opportunityName : log.opportunityId;
-            } else if (log.companyId) {
-                const relatedCompany = allCompanies.find(comp => comp.companyId === log.companyId);
-                log.companyName = relatedCompany ? relatedCompany.companyName : log.companyId;
-            }
-        } catch (error) {
-            console.error(`[EventLogReader] 為事件 ${eventId} 獲取關聯名稱時出錯:`, error);
-        }
-        
-        return log;
+        return allLogs.find(log => log.eventId === eventId) || null;
     }
 }
 

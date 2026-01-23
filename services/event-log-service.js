@@ -1,21 +1,15 @@
 /**
  * services/event-log-service.js
  * 事件紀錄服務邏輯
- * * @version 5.0.3 (Phase 5 Refactoring)
- * @date 2026-01-22
- * @description 負責各類型事件 (General, IOT, DT, DX) 的 CRUD 與資料聚合。[Fix] updateEventLog Proxy: Resolve eventId to rowIndex automatically.
+ * @version 5.1.2 (Phase 5 - Standard A Refactoring Hotfix: Move on eventType change)
+ * @date 2026-01-23
+ * @description
+ * [Standard A] Join 邏輯集中在 Service；所有回傳物件皆 clone，避免污染 Reader Cache。
+ * [Hotfix] 當 eventType 變更時，rowIndex 不可跨 sheet update，必須 delete + create (Move)。
  * 依賴注入：EventLogReader, EventLogWriter, OpportunityReader, CompanyReader, SystemReader, CalendarService
  */
 
 class EventLogService {
-    /**
-     * @param {EventLogReader} eventReader 
-     * @param {EventLogWriter} eventWriter 
-     * @param {OpportunityReader} oppReader 
-     * @param {CompanyReader} companyReader 
-     * @param {SystemReader} systemReader 
-     * @param {CalendarService} calendarService 
-     */
     constructor(eventReader, eventWriter, oppReader, companyReader, systemReader, calendarService) {
         this.eventReader = eventReader;
         this.eventWriter = eventWriter;
@@ -25,43 +19,68 @@ class EventLogService {
         this.calendarService = calendarService;
     }
 
-    /**
-     * 取得完整事件列表 (包含關聯名稱解析)
-     */
+    _invalidateEventCacheSafe() {
+        try {
+            if (this.eventReader && typeof this.eventReader.invalidateCache === 'function') {
+                this.eventReader.invalidateCache('eventLogs');
+            } else if (this.eventReader && this.eventReader.cache) {
+                // fallback: clear all cache if invalidateCache is not available
+                this.eventReader.cache = {};
+            }
+        } catch (e) {
+            // do nothing
+        }
+    }
+
     async getAllEvents() {
         try {
-            const events = await this.eventReader.getEventLogs();
-            
-            // 為了提升顯示效能，這裡可以選擇是否要 join 機會名稱與公司名稱
-            // 若資料量大，建議改由前端透過 ID Map 處理，或在此進行批次處理
-            // 目前維持簡單回傳
-            return events;
+            const [events, opps, comps] = await Promise.all([
+                this.eventReader.getEventLogs(),
+                this.oppReader.getOpportunities(),
+                this.companyReader.getCompanyList()
+            ]);
+
+            const oppMap = new Map(opps.map(o => [o.opportunityId, o.opportunityName]));
+            const compMap = new Map(comps.map(c => [c.companyId, c.companyName]));
+
+            return events.map(raw => {
+                const e = { ...raw }; // clone
+
+                // alias for compatibility
+                if (!e.id && e.eventId) e.id = e.eventId;
+
+                if (e.opportunityId) e.opportunityName = oppMap.get(e.opportunityId) || e.opportunityId;
+                if (e.companyId) e.companyName = compMap.get(e.companyId) || e.companyId;
+
+                return e;
+            });
         } catch (error) {
             console.error('[EventLogService] getAllEvents Error:', error);
             return [];
         }
     }
 
-    /**
-     * 取得單一事件詳情 (包含完整關聯資料)
-     */
     async getEventById(eventId) {
         try {
-            const event = await this.eventReader.getEventLogById(eventId);
-            if (!event) return null;
+            const rawEvent = await this.eventReader.getEventLogById(eventId);
+            if (!rawEvent) return null;
 
-            // 補充額外資訊
-            if (event.opportunityId) {
-                // 這裡使用 oppReader (已注入正確 ID)
-                const opps = await this.oppReader.getOpportunities();
-                const opp = opps.find(o => o.opportunityId === event.opportunityId);
-                if (opp) event.opportunityName = opp.opportunityName;
-            }
-            
-            if (event.companyId) {
-                const comps = await this.companyReader.getCompanyList();
-                const comp = comps.find(c => c.companyId === event.companyId);
-                if (comp) event.companyName = comp.companyName;
+            const event = { ...rawEvent }; // clone
+            if (!event.id && event.eventId) event.id = event.eventId;
+
+            try {
+                const [opps, comps] = await Promise.all([
+                    this.oppReader.getOpportunities(),
+                    this.companyReader.getCompanyList()
+                ]);
+
+                const oppMap = new Map(opps.map(o => [o.opportunityId, o.opportunityName]));
+                const compMap = new Map(comps.map(c => [c.companyId, c.companyName]));
+
+                if (event.opportunityId) event.opportunityName = oppMap.get(event.opportunityId) || event.opportunityId;
+                if (event.companyId) event.companyName = compMap.get(event.companyId) || event.companyId;
+            } catch (joinError) {
+                console.warn(`[EventLogService] Join failed for ${eventId}, returning raw clone.`, joinError);
             }
 
             return event;
@@ -71,31 +90,28 @@ class EventLogService {
         }
     }
 
-    /**
-     * 建立新事件
-     * 同步更新 Google Calendar (如果選項開啟)
-     */
     async createEvent(data, user) {
         try {
-            const modifier = user.displayName || user.username || 'System';
-            
-            // 1. 寫入 Sheet
+            const modifier = user?.displayName || user?.username || 'System';
+
             const result = await this.eventWriter.createEventLog(data, modifier);
-            
-            // 2. 同步 Calendar (Optional)
+            this._invalidateEventCacheSafe();
+
             if (result.success && data.syncToCalendar === 'true') {
                 try {
+                    const startIso = new Date(data.createdTime || Date.now()).toISOString();
+                    const endIso = new Date(Date.now() + 3600000).toISOString();
+
                     const calendarEvent = {
                         summary: `[${data.eventType}] ${data.eventName}`,
                         description: data.eventContent || '',
-                        start: { dateTime: new Date(data.createdTime || Date.now()).toISOString() }, // 需確認前端是否傳入正確時間格式
-                        end: { dateTime: new Date(Date.now() + 3600000).toISOString() } // 預設 1 小時，需優化
+                        start: { dateTime: startIso },
+                        end: { dateTime: endIso }
                     };
-                    // CalendarService 也已在 Container 中初始化
+
                     await this.calendarService.createEvent(calendarEvent);
                 } catch (calError) {
                     console.warn('[EventLogService] Calendar sync failed:', calError);
-                    // 不中斷主流程
                 }
             }
 
@@ -106,13 +122,12 @@ class EventLogService {
         }
     }
 
-    /**
-     * 更新事件
-     */
     async updateEvent(rowIndex, data, user) {
         try {
-            const modifier = user.displayName || user.username || 'System';
-            return await this.eventWriter.updateEventLog(rowIndex, data, modifier);
+            const modifier = user?.displayName || user?.username || 'System';
+            const result = await this.eventWriter.updateEventLog(rowIndex, data, modifier);
+            this._invalidateEventCacheSafe();
+            return result;
         } catch (error) {
             console.error(`[EventLogService] updateEvent Error (Row: ${rowIndex}):`, error);
             throw error;
@@ -120,53 +135,94 @@ class EventLogService {
     }
 
     /**
-     * [Proxy] 兼容舊 Controller 呼叫 updateEventLog
-     * [Fix] 自動偵測並轉換 eventId 為 rowIndex
-     * @param {string|number} idOrRowIndex - 可能是 rowIndex 或 eventId
-     * @param {Object} data 
-     * @param {string} modifier 
+     * [Proxy] 兼容舊 Controller：允許 eventId 或 rowIndex
+     * [Hotfix] 若 eventType 變更，必須 Move：delete(old sheet row) + create(new sheet row)
      */
     async updateEventLog(idOrRowIndex, data, modifier) {
-        let rowIndex = idOrRowIndex;
+        // 1) 先嘗試拿到 eventId（前端可能傳 eventId，也可能只傳 rowIndex）
+        const inputEventId = data?.eventId || data?.id || null;
 
-        // [Fix] 若傳入的是 Event ID (非純數字)，則先查找對應的 Row Index
-        if (typeof idOrRowIndex === 'string' && isNaN(Number(idOrRowIndex))) {
-            const logs = await this.eventReader.getEventLogs();
-            const target = logs.find(log => log.eventId === idOrRowIndex);
-            
+        // 2) 先讀全列表（這裡是必要的：用來解析原始 rowIndex / 原 eventType）
+        const logs = await this.eventReader.getEventLogs();
+
+        let original = null;
+
+        // 2a) 優先用 eventId 找原事件（最準）
+        if (inputEventId) {
+            original = logs.find(l => l.eventId === inputEventId) || null;
+        }
+
+        // 2b) 若找不到，再用 rowIndex 猜（風險較高，但保持相容）
+        if (!original) {
+            const candidateRow = Number(idOrRowIndex);
+            if (Number.isInteger(candidateRow)) {
+                original = logs.find(l => Number(l.rowIndex) === candidateRow) || null;
+            }
+        }
+
+        // 3) 若連原事件都找不到，就維持舊行為（交給 writer 報錯）
+        //    但我們先把 rowIndex 解析成數字
+        let rowIndex = idOrRowIndex;
+        if (typeof rowIndex === 'string' && isNaN(Number(rowIndex))) {
+            // 傳進來像 eventId 的情況：用 logs 查 rowIndex
+            const target = logs.find(l => l.eventId === rowIndex);
             if (!target || !target.rowIndex) {
-                throw new Error(`Update Failed: Event ID '${idOrRowIndex}' not found.`);
+                throw new Error(`Update Failed: Event ID '${rowIndex}' not found.`);
             }
             rowIndex = target.rowIndex;
         }
 
-        // [Safety] 正規化與驗證
         rowIndex = Number(rowIndex);
         if (!Number.isInteger(rowIndex)) {
             throw new Error('Invalid resolved rowIndex');
         }
 
-        // 將字串包裝成物件以符合 updateEvent 簽章
+        // 4) Hotfix：偵測事件種類變更 -> Move
+        //    original 必須存在才做 move；否則走原本 update
+        if (original && data && data.eventType && original.eventType && data.eventType !== original.eventType) {
+            try {
+                // (A) 先刪舊的（用原 eventType + 原 rowIndex 才刪得到）
+                await this.eventWriter.deleteEventLog(original.rowIndex, original.eventType);
+
+                // (B) 再建新的：保留 eventId（避免前端之後找不到）
+                const payload = { ...data };
+                payload.eventId = original.eventId;
+                payload.id = original.eventId;
+
+                // createdTime 若沒帶，保留原本建立時間（避免時間變動造成排序/顯示怪異）
+                if (!payload.createdTime && original.createdTime) payload.createdTime = original.createdTime;
+
+                const createResult = await this.eventWriter.createEventLog(payload, modifier);
+
+                this._invalidateEventCacheSafe();
+
+                // 盡量維持既有 shape：success 至少要有
+                if (createResult && typeof createResult === 'object') {
+                    return { ...createResult, moved: true };
+                }
+                return { success: true, moved: true };
+            } catch (moveError) {
+                console.error('[EventLogService] Move on eventType change failed:', moveError);
+                throw moveError;
+            }
+        }
+
+        // 5) 沒有 eventType 變更 -> 正常 update
         const user = { displayName: modifier };
         return await this.updateEvent(rowIndex, data, user);
     }
 
-    /**
-     * 刪除事件
-     */
     async deleteEvent(rowIndex, eventType, user) {
         try {
-            // 可加入權限檢查
-            return await this.eventWriter.deleteEventLog(rowIndex, eventType);
+            const result = await this.eventWriter.deleteEventLog(rowIndex, eventType);
+            this._invalidateEventCacheSafe();
+            return result;
         } catch (error) {
             console.error(`[EventLogService] deleteEvent Error (Row: ${rowIndex}):`, error);
             throw error;
         }
     }
-    
-    /**
-     * 取得系統定義的事件類型列表 (供前端下拉選單使用)
-     */
+
     async getEventTypes() {
         try {
             const config = await this.systemReader.getSystemConfig();
