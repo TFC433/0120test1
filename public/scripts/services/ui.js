@@ -1,15 +1,16 @@
 /**
  * public/scripts/services/ui.js
  * * 職責：管理所有全域 UI 元素，如彈窗、通知、面板、載入畫面和共用元件渲染器
- * * @version 6.1.6 (Hotfix: Adapter Pattern)
- * * @date 2026-01-16
- * * @description 
- * * 1. 新增功能：名片預覽圖可點擊開啟 Google Drive 原檔 (Zoom In)。
- * * 2. [鑑識修復] 補回 window.showNotification 與 window.showConfirmDialog 對應，解決前端 ReferenceError。
+ * * @version 6.1.7 (Hotfix: Restore renderPagination)
+ * * @date 2026-01-23
+ * @description
+ * 1. 新增功能：名片預覽圖可點擊開啟 Google Drive 原檔 (Zoom In)。
+ * 2. [鑑識修復] 補回 window.showNotification 與 window.showConfirmDialog 對應，解決前端 ReferenceError。
+ * 3. [鑑識修復] 補回 window.renderPagination，解決互動頁面分頁 ReferenceError。
  */
 
 // 【修改】將起始層級提高到 3000，確保系統彈窗永遠蓋在應用程式畫面(包含獨立編輯器)之上
-let zIndexCounter = 3000; 
+let zIndexCounter = 3000;
 
 // Global variable to store the callback for the confirm dialog
 window.confirmActionCallback = null;
@@ -36,7 +37,7 @@ function closeModal(modalId) {
         const anyModalOpen = document.querySelector('.modal[style*="display: block"]');
         if (!anyModalOpen) {
             document.body.style.overflow = ''; // Restore background scrolling only if no other modals are open
-             console.log('[UI] Restored body scroll.');
+            console.log('[UI] Restored body scroll.');
         }
     }
 }
@@ -85,19 +86,19 @@ function confirmAction(message, callback) {
     const modal = document.getElementById('confirm-modal');
     const msgElement = document.getElementById('confirm-message');
     const confirmBtn = document.getElementById('btn-confirm-yes');
-    
+
     if (modal && msgElement && confirmBtn) {
         msgElement.textContent = message;
-        
+
         // Remove existing listener to prevent multiple firings
         const newBtn = confirmBtn.cloneNode(true);
         confirmBtn.parentNode.replaceChild(newBtn, confirmBtn);
-        
+
         newBtn.addEventListener('click', () => {
             closeModal('confirm-modal');
             if (callback) callback();
         });
-        
+
         showModal('confirm-modal');
     } else {
         // Fallback if modal elements are missing
@@ -114,7 +115,7 @@ function confirmAction(message, callback) {
  */
 function renderStatusChip(status) {
     if (!status) return '';
-    
+
     // 定義狀態顏色映射 (可根據需求擴充)
     const statusColors = {
         'New': 'bg-blue-100 text-blue-800',
@@ -131,7 +132,7 @@ function renderStatusChip(status) {
 
 /**
  * 渲染優先級標籤
- * @param {string} priority 
+ * @param {string} priority
  * @returns {string} HTML
  */
 function renderPriorityChip(priority) {
@@ -154,7 +155,7 @@ function renderPriorityChip(priority) {
 /**
  * 顯示名片預覽 (v6.1.5 Refactored)
  * * @version 6.1.5
- * * @description 
+ * @description
  * 1. 使用後端串流 (/api/drive/thumbnail) 取得高清圖。
  * 2. 圖片可點擊 (Wrap in <a>)，在新分頁開啟 Google Drive 原檔。
  * 3. 自動適應視窗大小，無卷軸。
@@ -162,7 +163,7 @@ function renderPriorityChip(priority) {
 async function showBusinessCardPreview(driveLink) {
     // 1. 狀態鎖定
     currentPreviewDriveLink = driveLink;
-    
+
     const contentArea = document.getElementById('business-card-preview-content');
     const modalId = 'business-card-preview-modal';
 
@@ -181,7 +182,7 @@ async function showBusinessCardPreview(driveLink) {
             <p style="margin-top: 1rem; color: #666; font-size: 0.9rem;">正在讀取高清影像...</p>
         </div>
     `;
-    
+
     // 3. 開啟 Modal
     showModal(modalId);
 
@@ -229,10 +230,10 @@ async function showBusinessCardPreview(driveLink) {
 
     // 6. 載入失敗處理
     img.onerror = () => {
-         if (currentPreviewDriveLink !== driveLink) return;
-         console.warn('[UI] 名片預覽載入失敗');
-         
-         contentArea.innerHTML = `
+        if (currentPreviewDriveLink !== driveLink) return;
+        console.warn('[UI] 名片預覽載入失敗');
+
+        contentArea.innerHTML = `
             <div class="alert alert-warning" style="text-align: center; margin: 1rem;">
                 <p><strong>預覽載入失敗</strong></p>
                 <p class="text-muted small">無法直接顯示此圖片。</p>
@@ -240,7 +241,7 @@ async function showBusinessCardPreview(driveLink) {
                     <i class="fas fa-external-link-alt"></i> 開啟 Google Drive 原檔
                 </a>
             </div>
-         `;
+        `;
     };
 
     // 7. 觸發載入
@@ -248,23 +249,88 @@ async function showBusinessCardPreview(driveLink) {
 }
 
 function closeBusinessCardPreview() {
-    currentPreviewDriveLink = null; 
+    currentPreviewDriveLink = null;
 
     const contentArea = document.getElementById('business-card-preview-content');
-    
+
     // 清理可能殘留的 iframe (舊版相容)
     const iframe = document.getElementById('business-card-iframe');
     if (iframe) {
-        iframe.src = 'about:blank'; 
-        iframe.remove(); 
+        iframe.src = 'about:blank';
+        iframe.remove();
     }
-    
+
     // 清理圖片與內容
     if (contentArea) {
         contentArea.innerHTML = '';
     }
 
     closeModal('business-card-preview-modal');
+}
+
+/**
+ * 渲染分頁元件 (Adapter for legacy calls)
+ * - 目的：補回 interactions.js 等頁面腳本依賴的全域 renderPagination
+ * - 設計：不假設 callback 的參數格式，只保證「至少傳 page」；
+ *         若 callback 接受更多參數，它自己可從 DOM 讀取（例如搜尋框）。
+ *
+ * @param {string} containerId - 容器 ID
+ * @param {object} pagination - 分頁物件 { current, total, totalItems, hasNext, hasPrev }
+ * @param {string} callbackName - 全域回呼函式名稱 (e.g. 'loadAllInteractionsPage')
+ */
+function renderPagination(containerId, pagination, callbackName) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    if (!pagination || !pagination.totalItems || pagination.totalItems <= 0) {
+        container.innerHTML = '';
+        return;
+    }
+
+    const current = Number(pagination.current) || 1;
+    const total = Number(pagination.total) || 1;
+    const hasNext = !!pagination.hasNext;
+    const hasPrev = !!pagination.hasPrev;
+
+    // 建立 DOM（避免 inline onclick 字串拼接造成注入/跳脫問題）
+    container.innerHTML = `
+        <div class="pagination-wrap" style="display:flex; gap:12px; align-items:center; justify-content:center;">
+            <button type="button" class="pagination-btn" id="${containerId}-prev" ${hasPrev ? '' : 'disabled'}>
+                <i class="fas fa-chevron-left"></i> 上一頁
+            </button>
+            <span class="pagination-info">第 ${current} 頁 / 共 ${total} 頁</span>
+            <button type="button" class="pagination-btn" id="${containerId}-next" ${hasNext ? '' : 'disabled'}>
+                下一頁 <i class="fas fa-chevron-right"></i>
+            </button>
+        </div>
+    `;
+
+    const prevBtn = document.getElementById(`${containerId}-prev`);
+    const nextBtn = document.getElementById(`${containerId}-next`);
+
+    const invoke = (page) => {
+        const fn = window[callbackName];
+        if (typeof fn !== 'function') {
+            console.warn(`[UI] renderPagination: callback "${callbackName}" not found on window.`);
+            return;
+        }
+        // 只保證傳 page；其他參數由 callback 自行從 DOM 取得（最不回歸）
+        fn(page);
+    };
+
+    if (prevBtn) {
+        prevBtn.addEventListener('click', () => {
+            if (!hasPrev) return;
+            invoke(Math.max(1, current - 1));
+        });
+    }
+
+    if (nextBtn) {
+        nextBtn.addEventListener('click', () => {
+            if (!hasNext) return;
+            invoke(Math.min(total, current + 1));
+        });
+    }
 }
 
 // =======================================================
@@ -284,8 +350,11 @@ window.renderPriorityChip = renderPriorityChip;
 window.showBusinessCardPreview = showBusinessCardPreview;
 window.closeBusinessCardPreview = closeBusinessCardPreview;
 
+// [Fix] Export pagination renderer (for interactions.js)
+window.renderPagination = renderPagination;
+
 // Legacy Aliases (The Fix)
 window.showNotification = showToast;         // Map showNotification to showToast
 window.showConfirmDialog = confirmAction;    // Map showConfirmDialog to confirmAction
 
-console.log('[UI] UI Services loaded with legacy adapters (showNotification, showConfirmDialog).');
+console.log('[UI] UI Services loaded with legacy adapters (showNotification, showConfirmDialog, renderPagination).');
