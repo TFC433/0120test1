@@ -1,10 +1,12 @@
-/* [v7.0.1][2026-01-23] Announcement Layering Compliance Patch */
+/* [v7.0.2] Standard A Refactor */
 /**
  * data/announcement-reader.js
  * 專門負責讀取所有與「佈告欄」相關資料的類別
- * * @version 5.0.0 (Phase 5 Refactoring)
- * @date 2026-01-09
- * @description 實作 Strict Mode 依賴注入。
+ * * @version 7.0.0 (Standard A Refactor)
+ * @date 2026-01-23
+ * @description
+ * 1. [Strict] 移除所有排序邏輯 (Sorter)。
+ * 2. 僅回傳原始資料 (Raw Data Access)。
  */
 
 const BaseReader = require('./base-reader');
@@ -19,7 +21,8 @@ class AnnouncementReader extends BaseReader {
     }
 
     /**
-     * 取得所有公告，並依置頂與時間排序
+     * 取得所有公告 (Raw Data)
+     * 注意：不包含任何排序或過濾
      * @returns {Promise<Array<object>>}
      */
     async getAnnouncements() {
@@ -39,13 +42,8 @@ class AnnouncementReader extends BaseReader {
             isPinned: row[F.IS_PINNED] === 'TRUE'
         });
 
-        const sorter = (a, b) => {
-            if (a.isPinned && !b.isPinned) return -1;
-            if (!a.isPinned && b.isPinned) return 1;
-            return new Date(b.lastUpdateTime) - new Date(a.lastUpdateTime);
-        };
-        
-        const allData = await this._fetchAndCache(cacheKey, range, rowParser, sorter);
+        // [Standard A] 移除 sorter，僅讀取 Raw Data
+        const allData = await this._fetchAndCache(cacheKey, range, rowParser);
         
         return allData;
     }

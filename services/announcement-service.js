@@ -1,10 +1,12 @@
-/* [v7.0.1][2026-01-23] Announcement Layering Compliance Patch */
+/* [v7.0.2] Standard A Refactor */
 /**
  * services/announcement-service.js
  * 布告欄業務邏輯層
- * * @version 6.0.0 (New Service)
- * @date 2026-01-14
- * @description 負責處理布告欄的 CRUD 邏輯，封裝底層 Reader/Writer。
+ * * @version 7.0.0 (Standard A Refactor)
+ * @date 2026-01-23
+ * @description 
+ * 1. 承接原 Reader 的排序邏輯 (置頂優先 + 時間倒序)。
+ * 2. 負責業務過濾 (狀態檢查)。
  */
 
 class AnnouncementService {
@@ -19,15 +21,30 @@ class AnnouncementService {
     }
 
     /**
-     * 取得所有已發布公告
+     * 取得所有已發布公告 (含置頂排序)
      * @returns {Promise<Array>}
      */
     async getAnnouncements() {
         try {
-            // [Fix] 由 Service 層負責業務過濾 (Status='已發布')
-            // Reader 已經處理了「置頂排序」
-            const data = await this.announcementReader.getAnnouncements();
-            return data.filter(item => item.status === '已發布');
+            // 1. 取得 Raw Data
+            let data = await this.announcementReader.getAnnouncements();
+            
+            // 2. 業務過濾：僅顯示已發布
+            data = data.filter(item => item.status === '已發布');
+
+            // 3. [Moved from Reader] 業務排序：置頂優先 > 最後更新時間
+            data.sort((a, b) => {
+                // 置頂判斷
+                if (a.isPinned && !b.isPinned) return -1;
+                if (!a.isPinned && b.isPinned) return 1;
+                
+                // 時間排序 (Desc)
+                const dateA = new Date(a.lastUpdateTime || 0);
+                const dateB = new Date(b.lastUpdateTime || 0);
+                return dateB - dateA;
+            });
+
+            return data;
         } catch (error) {
             console.error('[AnnouncementService] getAnnouncements Error:', error);
             throw error;
@@ -43,7 +60,7 @@ class AnnouncementService {
         try {
             const creatorName = user.displayName || user.username || user.name || 'System';
             
-            // 可以在此加入額外的業務驗證 (例如：檢查標題是否為空)
+            // 業務驗證
             if (!data.title) {
                 throw new Error('公告標題為必填');
             }
@@ -58,17 +75,15 @@ class AnnouncementService {
 
     /**
      * 更新公告
-     * @param {string|number} id - 公告 ID 或 Row Index (目前 Controller 傳入的是 id，但 Writer 似乎依賴 rowIndex?)
-     * 注意：根據 Writer 的實作，updateAnnouncement 接收的是 rowIndex。
-     * 我們需要在 Service 層做一個轉換，或是確認前端傳入的是什麼。
-     * 假設前端傳入的是 ID，我們需要先查找該 ID 對應的 rowIndex。
+     * @param {string} id - 公告 ID
+     * @param {Object} data - 更新資料
+     * @param {Object} user - 操作者
      */
     async updateAnnouncement(id, data, user) {
         try {
             const modifierName = user.displayName || user.username || user.name || 'System';
 
-            // 1. 查找公告以獲取 rowIndex
-            // 為了效能，Reader 的 getAnnouncements 可能已經有 cache，直接用它
+            // 1. 查找公告以獲取 rowIndex (Reader 已快取，效能無虞)
             const allAnnouncements = await this.announcementReader.getAnnouncements();
             const target = allAnnouncements.find(a => a.id === id);
 
@@ -76,8 +91,6 @@ class AnnouncementService {
                 throw new Error(`找不到公告 ID: ${id}`);
             }
 
-            // 這裡假設 Reader 回傳的物件中有 rowIndex 屬性
-            // 檢查 Reader 程式碼：const rowParser = (row, index) => ({ rowIndex: index + 2, ... }) -> 有的。
             const rowIndex = target.rowIndex;
 
             const result = await this.announcementWriter.updateAnnouncement(rowIndex, data, modifierName);
@@ -94,7 +107,7 @@ class AnnouncementService {
      */
     async deleteAnnouncement(id) {
         try {
-            // 同樣需要先透過 ID 找 rowIndex
+            // 1. 查找公告以獲取 rowIndex
             const allAnnouncements = await this.announcementReader.getAnnouncements();
             const target = allAnnouncements.find(a => a.id === id);
 

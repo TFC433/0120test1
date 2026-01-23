@@ -1,11 +1,13 @@
-/* [v7.0.2][2026-01-23] Weekly Layering Compliance Patch */
+/* [v7.0.4] Weekly Standard A + S Final Polish */
 /**
  * services/weekly-business-service.js
  * 週間業務邏輯服務 (Service Layer)
- * * @version 6.0.4 (Restored getEntriesForWeek for Dashboard)
- * @date 2026-01-14
- * @description 負責聚合 Calendar, Opportunity 與 WeeklyReport 資料。
- * 適配 v5 Reader/Writer，並提供 Dashboard 所需的公開介面。
+ * * @version 7.0.1 (Standard A + S Final)
+ * @date 2026-01-23
+ * @description 
+ * [Final Polish]
+ * 1. deleteWeeklyBusinessEntry 介面修正 (移除 rowIndex 參數)。
+ * 2. getEntriesForWeek 增加明確的 View-only 欄位標記。
  */
 
 class WeeklyBusinessService {
@@ -31,34 +33,59 @@ class WeeklyBusinessService {
     }
 
     /**
-     * 【關鍵修復】獲取特定週次的所有條目
-     * 這是 DashboardService 依賴的接口，也是 0109 版本中的核心方法。
-     * 它充當 Adapter，將請求轉發給 v5 Reader。
-     * * @param {string} weekId - 週次 ID (e.g., "2026-W03")
-     * @returns {Promise<Array>} 該週的業務紀錄陣列
+     * 獲取特定週次的所有條目
+     * [View-Only] 負責 Filter, Sort, Day Calculation
+     * @param {string} weekId - 週次 ID (e.g., "2026-W03")
      */
     async getEntriesForWeek(weekId) {
         try {
-            // 呼叫 v5 Reader 的現有方法
-            // 這裡維持了分層：Service 知道 Reader 的實作細節，但外部使用者(Dashboard)不需要知道
-            // [R4 Patch] Reader now returns all entries, Service filters by weekId
-            const allEntries = await this.weeklyBusinessReader.getEntriesForWeek(weekId);
-            const entries = allEntries.filter(entry => entry.weekId === weekId);
+            // 1. 取得全量資料 (Raw)
+            const allEntries = await this.weeklyBusinessReader.getAllEntries();
+            
+            // 2. Filter by weekId
+            let entries = allEntries.filter(entry => entry.weekId === weekId);
+            
+            // 3. Sort by Date (Desc)
+            entries.sort((a, b) => new Date(b['日期']) - new Date(a['日期']));
+
+            // 4. Calculate 'day' (View-Only Field)
+            entries = entries.map(entry => {
+                let dayValue = -1;
+                try {
+                    const dateString = entry['日期'];
+                    if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+                        const [year, month, day] = dateString.split('-').map(Number);
+                        // 使用 UTC 避免時區偏差導致週幾計算錯誤
+                        const entryDateUTC = new Date(Date.UTC(year, month - 1, day));
+                        if (!isNaN(entryDateUTC.getTime())) {
+                            dayValue = entryDateUTC.getUTCDay();
+                        }
+                    }
+                } catch (e) {
+                    dayValue = -1;
+                }
+
+                return {
+                    ...entry,
+                    // [Backward Compatibility] 前端既有邏輯依賴 entry.day
+                    day: dayValue,
+                    // [Standard A+S] 明確的 View-only 結構標記
+                    _view: { day: dayValue }
+                };
+            });
+
             return entries || [];
         } catch (error) {
             console.error(`[WeeklyService] getEntriesForWeek Error (${weekId}):`, error);
-            // 發生錯誤時回傳空陣列，避免讓 Dashboard 整個崩潰
             return [];
         }
     }
 
     /**
      * 獲取週報列表摘要
-     * 使用 Reader v5 的 getWeeklySummary()
      */
     async getWeeklyBusinessSummaryList() {
         try {
-            // [R4 Patch] Receive raw data, aggregation moved from Reader
             const rawData = await this.weeklyBusinessReader.getWeeklySummary();
             
             const weekSummaryMap = new Map();
@@ -112,24 +139,13 @@ class WeeklyBusinessService {
 
     /**
      * 獲取單週詳細資料 (包含日曆過濾邏輯)
-     * 這部分邏輯保留自 0109，用於 Weekly 頁面顯示
      */
     async getWeeklyDetails(weekId, userId = null) {
-        console.log(`📊 [WeeklyService] 獲取週次 ${weekId} 的詳細資料...`);
-        
         const weekInfo = this.dateHelpers.getWeekInfo(weekId);
         
-        // --- 1. 使用自身的 getEntriesForWeek 方法讀取資料 ---
         let entriesForWeek = await this.getEntriesForWeek(weekId);
         
-        // 若有指定 User，進行篩選 (視業務需求開啟)
-        if (userId) {
-            // entriesForWeek = entriesForWeek.filter(d => d.userId === userId); 
-        }
-        
-        console.log(`   - 獲取了 ${entriesForWeek.length} 筆紀錄`);
-
-        // --- 2. 日曆與系統設定讀取 (維持 0109 邏輯) ---
+        // 日曆與系統設定讀取
         const firstDay = new Date(weekInfo.days[0].date + 'T00:00:00'); 
         const lastDay = new Date(weekInfo.days[weekInfo.days.length - 1].date + 'T00:00:00'); 
         const endQueryDate = new Date(lastDay.getTime() + 24 * 60 * 60 * 1000); 
@@ -161,7 +177,7 @@ class WeeklyBusinessService {
         const rawDxEvents = results[2] || []; 
         const rawAtEvents = results[3] || [];
 
-        // --- 3. 關鍵字過濾邏輯 (維持 0109 邏輯) ---
+        // 關鍵字過濾邏輯
         const rules = systemConfig['日曆篩選規則'] || [];
         const dxBlockRule = rules.find(r => r.value === 'DX_屏蔽關鍵字');
         const dxBlockKeywords = (dxBlockRule ? dxBlockRule.note : '').split(',').map(s => s.trim()).filter(Boolean);
@@ -269,17 +285,48 @@ class WeeklyBusinessService {
 
     /**
      * 更新週報
+     * [Flow Control] Lookup ID via Service -> Pure Write
      */
     async updateWeeklyBusinessEntry(recordId, data) {
-        const modifier = data.creator || 'System';
-        return this.weeklyBusinessWriter.updateEntry(recordId, data, modifier);
+        try {
+            // 1. Service Lookup (Simulate SQL Where)
+            const allEntries = await this.weeklyBusinessReader.getAllEntries();
+            const target = allEntries.find(e => e.recordId === recordId);
+            
+            if (!target) {
+                throw new Error(`找不到紀錄 ID: ${recordId}`);
+            }
+
+            // 2. Pure Write
+            const modifier = data.creator || 'System';
+            return await this.weeklyBusinessWriter.updateEntryRow(target.rowIndex, data, modifier);
+        } catch (error) {
+            console.error('[WeeklyService] updateWeeklyBusinessEntry Error:', error);
+            throw error;
+        }
     }
 
     /**
      * 刪除週報
+     * [Fix 1] 移除 rowIndex 參數，改由 Service 內部查找
+     * [Flow Control] Lookup ID via Service -> Pure Write
      */
-    async deleteWeeklyBusinessEntry(recordId, rowIndex) {
-        return this.weeklyBusinessWriter.deleteEntry(recordId);
+    async deleteWeeklyBusinessEntry(recordId) {
+        try {
+            // 1. Service Lookup
+            const allEntries = await this.weeklyBusinessReader.getAllEntries();
+            const target = allEntries.find(e => e.recordId === recordId);
+            
+            if (!target) {
+                throw new Error(`找不到紀錄 ID: ${recordId}`);
+            }
+
+            // 2. Pure Write (傳遞 rowIndex 給 Writer)
+            return await this.weeklyBusinessWriter.deleteEntryRow(target.rowIndex);
+        } catch (error) {
+            console.error('[WeeklyService] deleteWeeklyBusinessEntry Error:', error);
+            throw error;
+        }
     }
 }
 
