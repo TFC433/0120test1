@@ -1,3 +1,4 @@
+/* [v7.0.1][2026-01-23] Announcement Layering Compliance Patch */
 /**
  * data/announcement-reader.js
  * 專門負責讀取所有與「佈告欄」相關資料的類別
@@ -46,7 +47,7 @@ class AnnouncementReader extends BaseReader {
         
         const allData = await this._fetchAndCache(cacheKey, range, rowParser, sorter);
         
-        return allData.filter(item => item.status === '已發布');
+        return allData;
     }
 }
 

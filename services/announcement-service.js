@@ -1,3 +1,4 @@
+/* [v7.0.1][2026-01-23] Announcement Layering Compliance Patch */
 /**
  * services/announcement-service.js
  * 布告欄業務邏輯層
@@ -23,9 +24,10 @@ class AnnouncementService {
      */
     async getAnnouncements() {
         try {
-            // Reader 已經處理了「只回傳已發布」與「置頂排序」的邏輯
+            // [Fix] 由 Service 層負責業務過濾 (Status='已發布')
+            // Reader 已經處理了「置頂排序」
             const data = await this.announcementReader.getAnnouncements();
-            return data;
+            return data.filter(item => item.status === '已發布');
         } catch (error) {
             console.error('[AnnouncementService] getAnnouncements Error:', error);
             throw error;

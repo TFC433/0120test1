@@ -28,10 +28,10 @@ class WeeklyBusinessWriter extends BaseWriter {
      */
     async createEntry(data, creator) {
         console.log(`📅 [WeeklyWriter] 建立新紀錄: ${data.theme} by ${creator}`);
-        
+
         const now = new Date().toISOString();
         const recordId = `WK${Date.now()}`;
-        
+
         // 欄位順序: 日期, WeekID, 分類, 主題, 參與人員, 重點摘要, 待辦事項, CreateTime, LastUpdateTime, Creator, RecordID
         const newRow = [
             data.date || now.split('T')[0],
@@ -47,7 +47,6 @@ class WeeklyBusinessWriter extends BaseWriter {
             recordId
         ];
 
-        // ★★★ 使用 this.targetSpreadsheetId ★★★
         await this.sheets.spreadsheets.values.append({
             spreadsheetId: this.targetSpreadsheetId,
             range: `${this.config.SHEETS.WEEKLY_BUSINESS}!A:K`,
@@ -55,7 +54,7 @@ class WeeklyBusinessWriter extends BaseWriter {
             resource: { values: [newRow] }
         });
 
-        this.weeklyReader.invalidateCache(); // 清除 summary 和 list
+        this.weeklyReader.invalidateCache();
         return { success: true, id: recordId };
     }
 
@@ -64,17 +63,13 @@ class WeeklyBusinessWriter extends BaseWriter {
      */
     async updateEntry(recordId, data, modifier) {
         console.log(`📅 [WeeklyWriter] 更新紀錄: ${recordId} by ${modifier}`);
-        
-        // 1. 查找紀錄
-        // 週間業務通常資料量不大，這裡先讀取全部 cache 找 ID，再反查 rowIndex
-        // 嚴格來說應該用 Reader 的 findRowByValue，但如果 Reader 沒提供，我們這裡簡單實作
-        const allEntries = await this.weeklyReader._getAllWeeklyBusinessEntriesWithCache();
-        const entry = allEntries.find(e => e.recordId === recordId);
-        
+
+        // ✅ 改成走 Reader public API（不碰 private method）
+        const entry = await this.weeklyReader.findEntryByRecordId(recordId);
         if (!entry) throw new Error(`找不到紀錄 ID: ${recordId}`);
+
         const rowIndex = entry.rowIndex;
 
-        // 2. 準備更新資料
         const now = new Date().toISOString();
         const sheetName = this.config.SHEETS.WEEKLY_BUSINESS;
         const range = `${sheetName}!A${rowIndex}:K${rowIndex}`;
@@ -95,10 +90,9 @@ class WeeklyBusinessWriter extends BaseWriter {
         if (data.participants !== undefined) currentRow[4] = data.participants;
         if (data.summary !== undefined) currentRow[5] = data.summary;
         if (data.todo !== undefined) currentRow[6] = data.todo;
-        
+
         currentRow[8] = now; // LastUpdateTime
 
-        // ★★★ 使用 this.targetSpreadsheetId ★★★
         await this.sheets.spreadsheets.values.update({
             spreadsheetId: this.targetSpreadsheetId,
             range: range,
@@ -115,19 +109,17 @@ class WeeklyBusinessWriter extends BaseWriter {
      */
     async deleteEntry(recordId) {
         console.log(`🗑️ [WeeklyWriter] 刪除紀錄: ${recordId}`);
-        
-        const allEntries = await this.weeklyReader._getAllWeeklyBusinessEntriesWithCache();
-        const entry = allEntries.find(e => e.recordId === recordId);
-        
+
+        // ✅ 改成走 Reader public API（不碰 private method）
+        const entry = await this.weeklyReader.findEntryByRecordId(recordId);
         if (!entry) throw new Error(`找不到紀錄 ID: ${recordId}`);
 
-        // 呼叫 BaseWriter 的 _deleteRow
         await this._deleteRow(
-            this.config.SHEETS.WEEKLY_BUSINESS, 
-            entry.rowIndex, 
+            this.config.SHEETS.WEEKLY_BUSINESS,
+            entry.rowIndex,
             this.weeklyReader
         );
-        
+
         return { success: true };
     }
 }

@@ -1,3 +1,4 @@
+/* [v7.0.2][2026-01-23] Weekly Layering Compliance Patch */
 /**
  * data/weekly-business-reader.js
  * 專門負責讀取所有與「週間業務」相關資料的類別
@@ -15,74 +16,68 @@ class WeeklyBusinessReader extends BaseReader {
      */
     constructor(sheets, spreadsheetId) {
         super(sheets, spreadsheetId);
-        this.summaryCache = { data: null, timestamp: 0 };
+        // [R4 Patch] Removed summaryCache
     }
 
     /**
      * 取得所有週間業務紀錄的摘要資訊 (不含詳細內容)
-     * @returns {Promise<Array<object>>} - 包含 { weekId, summaryCount } 的陣列
+     * @returns {Promise<Array<object>>} - 包含 { weekId, summaryContent } 的陣列 (Raw)
      */
     async getWeeklySummary() {
-        const cacheKey = 'weeklyBusinessSummary';
-        const now = Date.now();
-        if (this.summaryCache.data && (now - this.summaryCache.timestamp < this.CACHE_DURATION)) {
-            console.log(`✅ [Cache] 從快取讀取 ${cacheKey}...`);
-            return this.summaryCache.data;
-        }
-
-        console.log(`🔄 [API] 從 Google Sheet 讀取 ${cacheKey}...`);
         try {
             const range = `${this.config.SHEETS.WEEKLY_BUSINESS}!B:F`;
             const response = await this.sheets.spreadsheets.values.get({
-                spreadsheetId: this.targetSpreadsheetId, // 使用注入 ID
+                spreadsheetId: this.targetSpreadsheetId,
                 range: range,
             });
 
             const rows = response.data.values || [];
-            if (rows.length <= 1) {
-                 this.summaryCache = { data: [], timestamp: now };
-                 return [];
-            }
+            if (rows.length <= 1) return [];
 
-            const weekSummaryMap = new Map();
+            // [R4 Patch] return raw data only
+            const rawData = rows.slice(1).map(row => ({
+                weekId: row[0],
+                summaryContent: row[4]
+            }));
 
-            rows.slice(1).forEach(row => {
-                const weekId = row[0];
-                const summaryContent = row[4]; 
-
-                if (weekId && /^\d{4}-W\d{2}$/.test(weekId)) {
-                    if (!weekSummaryMap.has(weekId)) {
-                        weekSummaryMap.set(weekId, { weekId: weekId, summaryCount: 0 });
-                    }
-                    if (summaryContent && summaryContent.trim() !== '') {
-                        weekSummaryMap.get(weekId).summaryCount++;
-                    }
-                }
-            });
-
-            const summaryData = Array.from(weekSummaryMap.values())
-                .sort((a, b) => b.weekId.localeCompare(a.weekId)); 
-
-            this.summaryCache = { data: summaryData, timestamp: now }; 
-            return summaryData;
-
+            return rawData;
         } catch (error) {
-            console.error(`❌ [WeeklyBusinessReader] 讀取 ${cacheKey} 失敗:`, error);
+            console.error(`❌ [WeeklyBusinessReader] 讀取 weeklyBusinessSummary 失敗:`, error);
             return [];
         }
     }
 
-
     /**
      * 根據 Week ID 取得該週的所有業務紀錄
-     * @param {string} weekId - 週次 ID (e.g., "2023-W42")
-     * @returns {Promise<Array<object>>} - 該週的紀錄陣列
+     * [R4 Patch] 由 Service 負責過濾，Reader 回傳全量
+     * @param {string} weekId - 週次 ID (保留參數以維持相容)
+     * @returns {Promise<Array<object>>}
      */
     async getEntriesForWeek(weekId) {
         const allEntries = await this._getAllWeeklyBusinessEntriesWithCache();
-        return allEntries.filter(entry => entry.weekId === weekId);
+        return allEntries;
     }
 
+    /**
+     * ✅ Public API：取得所有 entries（提供給 Service/Writer 使用）
+     * 目的：避免其他層直接呼叫 private method
+     * @returns {Promise<Array<object>>}
+     */
+    async getAllEntries() {
+        return await this._getAllWeeklyBusinessEntriesWithCache();
+    }
+
+    /**
+     * ✅ Public API：用 recordId 找 entry（含 rowIndex）
+     * 目的：讓 Writer 不需依賴 Reader 私有方法
+     * @param {string} recordId
+     * @returns {Promise<object|null>}
+     */
+    async findEntryByRecordId(recordId) {
+        if (!recordId) return null;
+        const allEntries = await this._getAllWeeklyBusinessEntriesWithCache();
+        return allEntries.find(e => e.recordId === recordId) || null;
+    }
 
     /**
      * 【內部方法】取得所有週間業務紀錄 (會使用快取)
@@ -90,7 +85,7 @@ class WeeklyBusinessReader extends BaseReader {
      * @returns {Promise<Array<object>>}
      */
     async _getAllWeeklyBusinessEntriesWithCache() {
-        const cacheKey = 'weeklyBusiness'; 
+        const cacheKey = 'weeklyBusiness';
         const range = `${this.config.SHEETS.WEEKLY_BUSINESS}!A:K`;
 
         const fieldKeys = [
@@ -104,22 +99,25 @@ class WeeklyBusinessReader extends BaseReader {
             fieldKeys.forEach((key, i) => {
                 entry[key] = row[i] || '';
             });
+
+            // 保留原本 day 計算行為（前端依賴 e.day 做渲染）
             try {
                 const dateString = entry['日期'];
-                 if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+                if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
                     const [year, month, day] = dateString.split('-').map(Number);
                     const entryDateUTC = new Date(Date.UTC(year, month - 1, day));
                     if (!isNaN(entryDateUTC.getTime())) {
-                       entry.day = entryDateUTC.getUTCDay(); 
+                        entry.day = entryDateUTC.getUTCDay();
                     } else {
-                       entry.day = -1; 
+                        entry.day = -1;
                     }
-                 } else {
-                    entry.day = -1; 
-                 }
-            } catch(e) {
-                entry.day = -1; 
+                } else {
+                    entry.day = -1;
+                }
+            } catch (e) {
+                entry.day = -1;
             }
+
             return entry;
         };
 
@@ -130,7 +128,6 @@ class WeeklyBusinessReader extends BaseReader {
 
     invalidateCache() {
         super.invalidateCache('weeklyBusiness');
-        this.summaryCache = { data: null, timestamp: 0 }; 
         console.log('✅ [Cache] 週間業務摘要與完整資料快取已失效');
     }
 }

@@ -1,3 +1,4 @@
+/* [v7.0.2][2026-01-23] Weekly Layering Compliance Patch */
 /**
  * services/weekly-business-service.js
  * 週間業務邏輯服務 (Service Layer)
@@ -40,7 +41,9 @@ class WeeklyBusinessService {
         try {
             // 呼叫 v5 Reader 的現有方法
             // 這裡維持了分層：Service 知道 Reader 的實作細節，但外部使用者(Dashboard)不需要知道
-            const entries = await this.weeklyBusinessReader.getEntriesForWeek(weekId);
+            // [R4 Patch] Reader now returns all entries, Service filters by weekId
+            const allEntries = await this.weeklyBusinessReader.getEntriesForWeek(weekId);
+            const entries = allEntries.filter(entry => entry.weekId === weekId);
             return entries || [];
         } catch (error) {
             console.error(`[WeeklyService] getEntriesForWeek Error (${weekId}):`, error);
@@ -55,7 +58,22 @@ class WeeklyBusinessService {
      */
     async getWeeklyBusinessSummaryList() {
         try {
-            const summaryData = await this.weeklyBusinessReader.getWeeklySummary();
+            // [R4 Patch] Receive raw data, aggregation moved from Reader
+            const rawData = await this.weeklyBusinessReader.getWeeklySummary();
+            
+            const weekSummaryMap = new Map();
+            rawData.forEach(item => {
+                const { weekId, summaryContent } = item;
+                if (weekId && /^\d{4}-W\d{2}$/.test(weekId)) {
+                    if (!weekSummaryMap.has(weekId)) {
+                        weekSummaryMap.set(weekId, { weekId: weekId, summaryCount: 0 });
+                    }
+                    if (summaryContent && summaryContent.trim() !== '') {
+                        weekSummaryMap.get(weekId).summaryCount++;
+                    }
+                }
+            });
+            const summaryData = Array.from(weekSummaryMap.values());
             
             const weeksList = summaryData.map(item => {
                 const weekId = item.weekId;

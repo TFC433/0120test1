@@ -1,15 +1,38 @@
-// views/scripts/weekly-business.js (V8.1 - Fix Payload Field Mismatch)
+/* [v7.0.3][2026-01-23] Weekly UI Safe-Parse + Weekday-Only Patch */
+// views/scripts/weekly-business.js
 // 職責：管理週間業務的列表、詳情雙日曆顯示、編輯與互動
-// 架構升級：修正 handleSaveWeeklyEntry 中的欄位名稱以符合後端 API 規格 (theme, todo)
+// 修補：
+// 1) data-* attribute 內的 JSON 統一 encodeURIComponent(JSON.stringify)
+// 2) 讀取時 decodeURIComponent + JSON.parse
+// 3) 只渲染週一~週五，避免六日 undefined
 
 let currentWeekData = null;
-let allWeeksSummary = []; 
+let allWeeksSummary = [];
+
+function _safeEncode(obj) {
+    try {
+        return encodeURIComponent(JSON.stringify(obj));
+    } catch (e) {
+        console.error('[Weekly] _safeEncode failed:', e);
+        return '';
+    }
+}
+
+function _safeDecode(str) {
+    try {
+        if (!str) return null;
+        return JSON.parse(decodeURIComponent(str));
+    } catch (e) {
+        console.error('[Weekly] _safeDecode failed:', e, 'raw=', str);
+        return null;
+    }
+}
 
 async function loadWeeklyBusinessPage() {
     // 檢查是否有從儀表板跳轉的 weekId
     const targetWeekId = sessionStorage.getItem('navigateToWeekId');
     if (targetWeekId) {
-        sessionStorage.removeItem('navigateToWeekId'); 
+        sessionStorage.removeItem('navigateToWeekId');
         await CRM_APP.navigateTo('weekly-detail', { weekId: targetWeekId });
         return;
     }
@@ -17,10 +40,8 @@ async function loadWeeklyBusinessPage() {
     const container = document.getElementById('page-weekly-business');
     if (!container) return;
 
-    // 1. 初始化容器與事件監聽 (這是系統性穩定的關鍵)
-    // 我們在最外層綁定一次，之後內部的 HTML 怎麼變動都不怕
     container.innerHTML = `<div class="loading show"><div class="spinner"></div><p>載入週次列表中...</p></div>`;
-    
+
     // 移除舊的監聽器 (防止重複綁定) 並綁定新的
     container.removeEventListener('click', handleWeeklyPageClick);
     container.addEventListener('click', handleWeeklyPageClick);
@@ -41,35 +62,38 @@ async function loadWeeklyBusinessPage() {
 // --- 事件委派核心處理器 (Centralized Event Handler) ---
 
 function handleWeeklyPageClick(e) {
-    // 尋找最近的帶有 data-action 的元素
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
 
     const action = btn.dataset.action;
     const payload = btn.dataset;
 
-    // 根據動作分派任務
     switch (action) {
         case 'show-add-week-modal':
             showAddWeekModal();
             break;
+
         case 'navigate-detail':
             CRM_APP.navigateTo('weekly-detail', { weekId: payload.weekId });
             break;
+
         case 'navigate-back':
-            CRM_APP.navigateTo('weekly-business'); // 返回總覽
+            CRM_APP.navigateTo('weekly-business');
             break;
-        case 'open-editor':
-            // 解析可能的 JSON payload
-            try {
-                const dayInfo = JSON.parse(payload.dayInfo);
-                const theme = JSON.parse(payload.theme);
-                const entry = payload.entry ? JSON.parse(payload.entry) : null;
-                openWeeklyBusinessEditorPanel(dayInfo, theme, entry);
-            } catch (err) {
-                console.error('解析編輯資料失敗', err);
+
+        case 'open-editor': {
+            // [Fix] Safe decode
+            const dayInfo = _safeDecode(payload.dayInfo);
+            const theme = _safeDecode(payload.theme);
+            const entry = payload.entry ? _safeDecode(payload.entry) : null;
+
+            if (!dayInfo || !theme) {
+                console.error('解析編輯資料失敗：dayInfo/theme 為 null', { payload });
+                return;
             }
+            openWeeklyBusinessEditorPanel(dayInfo, theme, entry);
             break;
+        }
     }
 }
 
@@ -105,10 +129,9 @@ function renderWeekListPage() {
             const isCurrent = week.id === currentWeekId;
             const currentWeekLabel = isCurrent ? '<span class="current-week-label">(本週)</span>' : '';
 
-            // 改用 data-action
             html += `
-                <div class="week-list-item ${isCurrent ? 'current-week' : ''}" 
-                     data-action="navigate-detail" 
+                <div class="week-list-item ${isCurrent ? 'current-week' : ''}"
+                     data-action="navigate-detail"
                      data-week-id="${week.id}">
                     <div class="week-info">
                         <div class="week-title">${week.title} ${currentWeekLabel}</div>
@@ -130,8 +153,7 @@ function renderWeekListPage() {
 
 async function navigateToWeeklyDetail(weekId) {
     const container = document.getElementById('page-weekly-business');
-    
-    // 確保監聽器存在 (因為 navigateTo 可能直接被呼叫)
+
     container.removeEventListener('click', handleWeeklyPageClick);
     container.addEventListener('click', handleWeeklyPageClick);
 
@@ -142,14 +164,13 @@ async function navigateToWeeklyDetail(weekId) {
         if (!result.success) throw new Error(result.error || `無法載入 ${weekId} 的資料`);
 
         currentWeekData = result.data;
-        
-        // 更新標題 (若有 Breadcrumbs 或 Header)
+
         const pageTitle = document.getElementById('page-title');
         if (pageTitle) pageTitle.textContent = '週間業務詳情';
 
         renderWeeklyDetailView();
     } catch (error) {
-       if (error.message !== 'Unauthorized') {
+        if (error.message !== 'Unauthorized') {
             container.innerHTML = `<div class="alert alert-error">載入週報詳情失敗: ${error.message}</div>`;
         }
     }
@@ -160,23 +181,29 @@ function renderWeeklyDetailView() {
 
     const systemConfig = window.CRM_APP ? window.CRM_APP.systemConfig : {};
     const pageTitle = (systemConfig['頁面標題']?.find(item => item.value === '週間業務標題')?.note) || '週間業務重點摘要';
-    const themes = systemConfig['週間業務主題'] || [{value: 'IoT', note: 'IoT'}, {value: 'DT', note: 'DT'}];
+    const themes = systemConfig['週間業務主題'] || [{ value: 'IoT', note: 'IoT' }, { value: 'DT', note: 'DT' }];
+
+    // [Fix] 僅保留週一~週五
+    const weekDays = (currentWeekData.days || []).filter(d => Number(d.dayIndex) <= 5);
 
     const daysData = {};
-    currentWeekData.days.forEach(day => {
+    weekDays.forEach(day => {
         daysData[day.dayIndex] = {};
         themes.forEach(theme => {
-            daysData[day.dayIndex][theme.value] = currentWeekData.entries.filter(e => e.day == day.dayIndex && e.category === theme.value);
+            daysData[day.dayIndex][theme.value] =
+                (currentWeekData.entries || []).filter(e => e.day == day.dayIndex && e.category === theme.value);
         });
     });
 
-    let newWeekNotice = currentWeekData.entries.length === 0 ? `<div class="alert alert-info">這是新的空白週報，請點擊下方的「+」幽靈卡片來建立第一筆內容。</div>` : '';
+    let newWeekNotice =
+        (currentWeekData.entries || []).length === 0
+            ? `<div class="alert alert-info">這是新的空白週報，請點擊下方的「+」幽靈卡片來建立第一筆內容。</div>`
+            : '';
 
     const prevWeekId = getAdjacentWeekId(currentWeekData.id, -1);
     const nextWeekId = getAdjacentWeekId(currentWeekData.id, 1);
     const todayString = new Date().toISOString().split('T')[0];
 
-    // 使用 data-action 進行導航
     let html = `
         <div class="dashboard-widget">
             <div class="widget-header">
@@ -196,7 +223,7 @@ function renderWeeklyDetailView() {
                     <div class="grid-header"></div>
                     ${themes.map(theme => `<div class="grid-header ${theme.value.toLowerCase()}">${theme.note}</div>`).join('')}
 
-                    ${currentWeekData.days.map(dayInfo => {
+                    ${weekDays.map(dayInfo => {
                         const isHoliday = !!dayInfo.holidayName;
                         const holidayClass = isHoliday ? 'is-holiday' : '';
                         const holidayNameHtml = isHoliday ? `<span class="holiday-name">${dayInfo.holidayName}</span>` : '';
@@ -211,27 +238,29 @@ function renderWeeklyDetailView() {
                                 ${holidayNameHtml}
                                 ${todayIndicator}
                             </div>
-                            
+
                             ${themes.map(theme => {
-                                // 雙日曆渲染邏輯 (IoT/DT 分流)
                                 let calendarEventsHtml = '';
                                 if (theme.value === 'IoT' && dayInfo.dxCalendarEvents?.length > 0) {
-                                    calendarEventsHtml = `<div class="calendar-events-list">` + 
-                                        dayInfo.dxCalendarEvents.map(evt => `<div class="calendar-text-item" title="DX行程">📅 ${evt.summary}</div>`).join('') + 
+                                    calendarEventsHtml =
+                                        `<div class="calendar-events-list">` +
+                                        dayInfo.dxCalendarEvents.map(evt => `<div class="calendar-text-item" title="DX行程">📅 ${evt.summary}</div>`).join('') +
                                         `<div class="calendar-separator"></div></div>`;
                                 }
                                 if (theme.value === 'DT' && dayInfo.atCalendarEvents?.length > 0) {
-                                    calendarEventsHtml = `<div class="calendar-events-list">` + 
-                                        dayInfo.atCalendarEvents.map(evt => `<div class="calendar-text-item" title="AT行程">📅 ${evt.summary}</div>`).join('') + 
+                                    calendarEventsHtml =
+                                        `<div class="calendar-events-list">` +
+                                        dayInfo.atCalendarEvents.map(evt => `<div class="calendar-text-item" title="AT行程">📅 ${evt.summary}</div>`).join('') +
                                         `<div class="calendar-separator"></div></div>`;
                                 }
-                                
+
                                 return `
-                                <div class="grid-cell ${holidayClass} ${todayClass} ${theme.value.toLowerCase()}" id="cell-${dayInfo.dayIndex}-${theme.value}">
-                                    ${calendarEventsHtml}
-                                    ${renderCellContent(daysData[dayInfo.dayIndex][theme.value], dayInfo, theme)}
-                                </div>
-                            `}).join('')}
+                                    <div class="grid-cell ${holidayClass} ${todayClass} ${theme.value.toLowerCase()}" id="cell-${dayInfo.dayIndex}-${theme.value}">
+                                        ${calendarEventsHtml}
+                                        ${renderCellContent(daysData[dayInfo.dayIndex][theme.value] || [], dayInfo, theme)}
+                                    </div>
+                                `;
+                            }).join('')}
                         `;
                     }).join('')}
                 </div>
@@ -243,41 +272,38 @@ function renderWeeklyDetailView() {
 }
 
 function renderCellContent(entries, dayInfo, theme) {
-    // 序列化物件以便放入 data-payload
-    const dayInfoStr = JSON.stringify(dayInfo);
-    const themeStr = JSON.stringify(theme);
+    // [Fix] Safe encode for data attributes
+    const dayInfoStr = _safeEncode(dayInfo);
+    const themeStr = _safeEncode(theme);
 
-    let contentHtml = entries.map(entry => {
+    let contentHtml = (entries || []).map(entry => {
         if (!entry || !entry.recordId) return '';
-        const entryStr = JSON.stringify(entry);
+
+        const entryStr = _safeEncode(entry);
         const categoryClass = entry.category ? `category-${entry.category.toLowerCase()}` : '';
-        
-        // 修正顯示欄位對應: 後端給的是 'theme'，前端顯示時需要確認
-        // 假設後端現在回傳正確的欄位名稱
-        // 如果後端回傳的是 'theme'，這裡需改為 entry['theme']，但考慮舊資料可能是 '主題'
+
         const topicDisplay = entry['theme'] || entry['主題'] || '無主題';
         const summaryDisplay = entry['summary'] || entry['重點摘要'] || '';
-        
+
         return `
             <div class="entry-card-read ${categoryClass}" id="entry-${entry.recordId}">
-                <button class="action-btn small warn edit-btn" 
-                        data-action="open-editor" 
-                        data-day-info='${dayInfoStr}' 
-                        data-theme='${themeStr}' 
-                        data-entry='${entryStr}'>✏️</button>
+                <button class="action-btn small warn edit-btn"
+                        data-action="open-editor"
+                        data-day-info="${dayInfoStr}"
+                        data-theme="${themeStr}"
+                        data-entry="${entryStr}">✏️</button>
                 <div class="entry-card-topic">${topicDisplay}</div>
                 <div class="entry-card-participants">👤 ${entry['participants'] || entry['參與人員'] || '無'}</div>
                 ${summaryDisplay ? `<div class="entry-card-summary">${summaryDisplay}</div>` : ''}
             </div>
         `;
     }).join('');
-    
-    // 幽靈卡片 (新增)
+
     contentHtml += `
-        <div class="entry-card-ghost" 
-             data-action="open-editor" 
-             data-day-info='${dayInfoStr}' 
-             data-theme='${themeStr}'
+        <div class="entry-card-ghost"
+             data-action="open-editor"
+             data-day-info="${dayInfoStr}"
+             data-theme="${themeStr}"
              title="新增紀錄">
             <span class="ghost-plus">+</span>
         </div>
@@ -285,7 +311,7 @@ function renderCellContent(entries, dayInfo, theme) {
     return contentHtml;
 }
 
-// --- 側邊面板處理 (Side Panel) - 這裡採用直接綁定，因為面板是動態 Append 的 ---
+// --- 側邊面板處理 (Side Panel) ---
 
 function openWeeklyBusinessEditorPanel(dayInfo, theme, entry) {
     const isNew = !entry;
@@ -293,7 +319,6 @@ function openWeeklyBusinessEditorPanel(dayInfo, theme, entry) {
     const backdrop = document.getElementById('panel-backdrop');
 
     let participantsTags = '';
-    // 相容 'participants' 或 '參與人員'
     const currentParticipants = entry?.['participants'] || entry?.['參與人員'] || '';
     const selectedParticipants = isNew ? new Set() : new Set(currentParticipants.split(',').map(p => p.trim()).filter(Boolean));
 
@@ -312,7 +337,6 @@ function openWeeklyBusinessEditorPanel(dayInfo, theme, entry) {
         participantsTags += `</div>`;
     }
 
-    // 相容 'theme' 或 '主題', 'summary' 或 '重點摘要', 'todo' 或 '待辦事項'
     const topicValue = isNew ? '' : (entry?.['theme'] || entry?.['主題'] || '');
     const summaryValue = isNew ? '' : (entry?.['summary'] || entry?.['重點摘要'] || '');
     const todoValue = isNew ? '' : (entry?.['todo'] || entry?.['待辦事項'] || '');
@@ -328,8 +352,8 @@ function openWeeklyBusinessEditorPanel(dayInfo, theme, entry) {
                     <p style="background:var(--primary-bg); padding: 8px; border-radius: 4px; margin-bottom: 1rem;">
                         <strong>日期:</strong> ${dayInfo.date} (${theme.note})
                     </p>
-                    <input type="hidden" name="recordId" value="${isNew ? '' : entry?.recordId}">
-                    <input type="hidden" name="rowIndex" value="${isNew ? '' : entry?.rowIndex}">
+                    <input type="hidden" name="recordId" value="${isNew ? '' : (entry?.recordId || '')}">
+                    <input type="hidden" name="rowIndex" value="${isNew ? '' : (entry?.rowIndex || '')}">
                     <input type="hidden" name="date" value="${dayInfo.date}">
                     <input type="hidden" name="category" value="${theme.value}">
                     <div class="form-group">
@@ -344,12 +368,12 @@ function openWeeklyBusinessEditorPanel(dayInfo, theme, entry) {
                         <label class="form-label">重點摘要</label>
                         <textarea name="summary" class="form-textarea" rows="5">${summaryValue}</textarea>
                     </div>
-                     <div class="form-group">
+                    <div class="form-group">
                         <label class="form-label">待辦事項</label>
                         <textarea name="todo" class="form-textarea" rows="3">${todoValue}</textarea>
                     </div>
                     <div class="btn-group">
-                         ${!isNew && entry ? `<button type="button" class="action-btn danger" style="margin-right: auto;" id="btn-delete-entry">刪除</button>` : ''}
+                        ${(!isNew && entry) ? `<button type="button" class="action-btn danger" style="margin-right: auto;" id="btn-delete-entry">刪除</button>` : ''}
                         <button type="button" class="action-btn secondary" id="btn-cancel-panel">取消</button>
                         <button type="submit" class="submit-btn">儲存</button>
                     </div>
@@ -359,11 +383,10 @@ function openWeeklyBusinessEditorPanel(dayInfo, theme, entry) {
     `;
     panelContainer.innerHTML = panelHTML;
 
-    // 【重要】直接對新生成的 DOM 綁定事件，不使用 onclick
     document.getElementById('wb-panel-form').addEventListener('submit', handleSaveWeeklyEntry);
     document.getElementById('btn-close-panel').addEventListener('click', closeWeeklyBusinessEditorPanel);
     document.getElementById('btn-cancel-panel').addEventListener('click', closeWeeklyBusinessEditorPanel);
-    
+
     const deleteBtn = document.getElementById('btn-delete-entry');
     if (deleteBtn) {
         deleteBtn.addEventListener('click', () => {
@@ -372,11 +395,11 @@ function openWeeklyBusinessEditorPanel(dayInfo, theme, entry) {
     }
 
     requestAnimationFrame(() => {
-        if(backdrop) backdrop.classList.add('is-open');
+        if (backdrop) backdrop.classList.add('is-open');
         const editorPanel = document.getElementById('weekly-business-editor-panel');
-        if(editorPanel) editorPanel.classList.add('is-open');
+        if (editorPanel) editorPanel.classList.add('is-open');
     });
-     if(backdrop) backdrop.onclick = closeWeeklyBusinessEditorPanel;
+    if (backdrop) backdrop.onclick = closeWeeklyBusinessEditorPanel;
 }
 
 function closeWeeklyBusinessEditorPanel() {
@@ -395,14 +418,13 @@ async function handleSaveWeeklyEntry(event) {
 
     const selectedParticipants = Array.from(form.querySelectorAll('[name="participants"]:checked')).map(cb => cb.value);
 
-    // ★★★ 關鍵修正：將 title 改為 theme，將 actionItems 改為 todo 以符合後端 Writer ★★★
     const entryData = {
         date: form.querySelector('[name="date"]').value,
         category: form.querySelector('[name="category"]').value,
-        theme: form.querySelector('[name="theme"]').value, // 修正：name="topic" -> name="theme"
+        theme: form.querySelector('[name="theme"]').value,
         participants: selectedParticipants.join(','),
         summary: form.querySelector('[name="summary"]').value,
-        todo: form.querySelector('[name="todo"]').value,   // 修正：name="actionItems" -> name="todo"
+        todo: form.querySelector('[name="todo"]').value,
         rowIndex: form.querySelector('[name="rowIndex"]').value
     };
 
@@ -419,7 +441,6 @@ async function handleSaveWeeklyEntry(event) {
         if (!result.success) throw new Error(result.error || '儲存失敗');
 
         closeWeeklyBusinessEditorPanel();
-        // 重新載入當前週次 (因為是用 navigateTo 進入，所以重刷該函式)
         navigateToWeeklyDetail(currentWeekData.id);
     } catch (error) {
         if (error.message !== 'Unauthorized') showNotification(`儲存失敗: ${error.message}`, 'error');
@@ -431,7 +452,7 @@ async function handleSaveWeeklyEntry(event) {
 // --- 輔助函式 (Utility) ---
 
 function getWeekIdForDate(d) {
-     if (!(d instanceof Date)) {
+    if (!(d instanceof Date)) {
         try {
             d = new Date(d);
             if (isNaN(d.getTime())) throw new Error();
@@ -445,7 +466,7 @@ function getWeekIdForDate(d) {
     const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
     const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
     return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
-};
+}
 
 function getAdjacentWeekId(currentWeekId, direction) {
     const [year, week] = currentWeekId.split('-W').map(Number);
@@ -524,7 +545,6 @@ async function showAddWeekModal() {
     `;
     modalContainer.insertAdjacentHTML('beforeend', modalHtml);
 
-    // 【重要】綁定 Modal 內部按鈕
     document.getElementById('btn-close-week-modal').addEventListener('click', () => document.getElementById('add-week-modal')?.remove());
     document.getElementById('btn-confirm-add-week').addEventListener('click', confirmAddWeek);
 }
@@ -566,25 +586,25 @@ function _injectDetailStyles() {
         const style = document.createElement('style');
         style.id = 'weekly-detail-styles';
         style.innerHTML = `
-            .weekly-detail-grid { display: grid; grid-template-columns: 100px repeat(2, 1fr); gap: 8px; } /* 預設 2 個主題 */
+            .weekly-detail-grid { display: grid; grid-template-columns: 100px repeat(2, 1fr); gap: 8px; }
             .grid-header, .grid-day-label { padding: 10px; font-weight: 600; text-align: center; background-color: var(--primary-bg); border-radius: 8px; line-height: 1.4; position: relative; }
             .grid-cell { background-color: var(--primary-bg); border-radius: 8px; padding: 10px; min-height: 120px; display: flex; flex-direction: column; gap: 8px; }
-            
+
             .grid-day-label.is-holiday { background: color-mix(in srgb, var(--accent-green) 10%, var(--primary-bg)); }
             .holiday-name { display: block; font-size: 0.75rem; font-weight: 700; color: var(--accent-green); margin-top: 4px; }
             .grid-cell.is-holiday { background: color-mix(in srgb, var(--accent-green) 10%, var(--primary-bg)); }
-            
+
             .grid-day-label.is-today { background: color-mix(in srgb, var(--accent-blue) 10%, var(--primary-bg)); border: 1px solid var(--accent-blue); }
             .today-indicator { display: block; font-size: 0.8rem; font-weight: 700; color: var(--accent-blue); margin-top: 4px; }
             .grid-cell.is-today { background: color-mix(in srgb, var(--accent-blue) 10%, var(--primary-bg)); border: 1px solid var(--accent-blue); }
 
             .grid-header.iot { background-color: var(--accent-blue); color: white; }
             .grid-header.dt { background-color: var(--accent-purple); color: white; }
-            
+
             .entry-card-read { position: relative; background: var(--secondary-bg); padding: 8px; border-radius: 4px; border-left: 3px solid var(--accent-blue); margin-bottom: 0; }
             .entry-card-read.category-iot { border-left-color: var(--accent-blue); }
             .entry-card-read.category-dt { border-left-color: var(--accent-purple); }
-            
+
             .grid-cell.is-holiday .entry-card-read {
                 border-left-color: var(--accent-green);
                 background: color-mix(in srgb, var(--accent-green) 5%, var(--secondary-bg));
@@ -592,11 +612,11 @@ function _injectDetailStyles() {
 
             .entry-card-read .edit-btn { position: absolute; top: 5px; right: 5px; display: none; padding: 2px 6px; }
             .entry-card-read:hover .edit-btn { display: block; }
-            
+
             .entry-card-topic { font-weight: 600; font-size: 1.0rem; margin-bottom: 2px; line-height: 1.4; }
             .entry-card-participants { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; }
             .entry-card-summary { font-size: 0.85rem; white-space: pre-wrap; margin-top: 5px; color: var(--text-secondary); }
-            
+
             .entry-card-ghost {
                 margin-top: auto;
                 border: 2px dashed var(--border-color);
