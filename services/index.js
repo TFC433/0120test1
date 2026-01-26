@@ -1,13 +1,14 @@
 /**
  * services/index.js
  * 業務服務層入口 (Service Factory)
- * * @version 6.0.0 (Dependency Injection Fix)
- * @date 2026-01-13
- * @description 負責初始化所有 Service，並處理 Service 之間的依賴注入 (DI)。
+ * * @version 6.0.1 (Line-Leads L1→L2 minimal)
+ * @date 2026-01-26
+ * @description 僅為 Line-Leads L1→L2 增補 authService 注入，不改動既有 DI 架構與回傳容器型態。
  * 確保低層級 Service (如 Opportunity) 先初始化，再注入到聚合型 Service (如 Weekly) 中。
  */
 
 const config = require('../config');
+const AuthService = require('./auth-service');
 const DashboardService = require('./dashboard-service');
 const OpportunityService = require('./opportunity-service');
 const CompanyService = require('./company-service');
@@ -70,6 +71,9 @@ function initializeBusinessServices(coreServices) {
     // 將 config 和 dateHelpers 加入基礎依賴中
     const servicesWithUtils = { ...coreServices, config, dateHelpers };
 
+    // Line-Leads L1→L2：提供 authService 給 routes/line-leads.routes.js 注入
+    const authService = new AuthService(coreServices.systemReader, coreServices.systemWriter);
+
     // ============================================================
     // Level 1: 基礎業務服務 (Base Domain Services)
     // 這些服務只依賴 Reader/Writer，不依賴其他 Service
@@ -83,10 +87,10 @@ function initializeBusinessServices(coreServices) {
     // Level 2: 聚合型服務 (Aggregator Services)
     // 這些服務需要呼叫 Level 1 的 Service 來組裝數據
     // ============================================================
-    
+
     // WeeklyBusinessService 需要 OpportunityService 來獲取本週商機
-    const servicesForWeekly = { 
-        ...servicesWithUtils, 
+    const servicesForWeekly = {
+        ...servicesWithUtils,
         opportunityService: opportunityService // 明確注入已實例化的 opportunityService
     };
     const weeklyBusinessService = new WeeklyBusinessService(servicesForWeekly);
@@ -114,7 +118,10 @@ function initializeBusinessServices(coreServices) {
         drive: coreServices.drive,
 
         // 工具函式
-        dateHelpers, 
+        dateHelpers,
+
+        // 身分驗證服務（供 Line-Leads 注入）
+        authService,
 
         // 業務邏輯服務 (Business Services)
         dashboardService,

@@ -1,10 +1,10 @@
 /**
  * services/auth-service.js
  * 使用者認證服務 (User Domain Layer)
- * * @version 5.1.0 (Phase 5 - Full Logic Migration)
- * @date 2026-01-12
- * @description 負責系統使用者的登入驗證、密碼管理與 Token 簽發。
- * 包含完整的 bcrypt 驗證與 SystemWriter 寫入支援。
+ * * @version 5.2.3
+ * @date 2026-01-26
+ * @description Line-Leads L1→L2：新增 verifyLineIdToken，其餘既有登入/密碼流程保持不變。
+ * @contract 遵守契約 v1.0：DOM/API/localStorage 不變。
  */
 
 const bcrypt = require('bcryptjs');
@@ -21,11 +21,51 @@ class AuthService {
         // systemWriter 是選擇性的，但為了修改密碼功能，建議注入
         this.systemReader = systemReader;
         this.systemWriter = systemWriter;
+
+        // [Line-Leads L2] 使用與原 line-leads.controller.js 相同的環境變數邏輯
+        this.LINE_CHANNEL_ID = process.env.LINE_CHANNEL_ID || '2006367469';
+    }
+
+    /**
+     * 驗證 LINE ID Token（Line-Leads L1→L2）
+     * - 邏輯遷移自 controllers/line-leads.controller.js 的 _verifyLineToken + TEST_LOCAL_TOKEN 分流
+     * - 回傳 null 表示驗證失敗（保持原 controller 行為：401）
+     * @param {string} token
+     * @returns {Promise<Object|null>}
+     */
+    async verifyLineIdToken(token) {
+        try {
+            // Dev 特權 Token（保持原行為）
+            if (token === 'TEST_LOCAL_TOKEN') {
+                return { sub: 'TEST_USER', name: 'Developer' };
+            }
+
+            const params = new URLSearchParams();
+            params.append('id_token', token);
+            params.append('client_id', this.LINE_CHANNEL_ID);
+
+            const response = await fetch('https://api.line.me/oauth2/v2.1/verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: params
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                console.error('[AuthService] LINE Verify Failed:', errText);
+                return null;
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error('[AuthService] LINE Verify Exception:', error.message);
+            return null;
+        }
     }
 
     /**
      * 內部輔助：取得並驗證使用者
-     * @param {string} username 
+     * @param {string} username
      * @returns {Promise<Object>} user object
      */
     async _findUser(username) {
@@ -41,8 +81,8 @@ class AuthService {
 
     /**
      * 使用者登入驗證
-     * @param {string} username 
-     * @param {string} password 
+     * @param {string} username
+     * @param {string} password
      * @returns {Promise<Object>} { user, token }
      */
     async login(username, password) {
@@ -95,8 +135,8 @@ class AuthService {
 
     /**
      * 驗證使用者密碼 (用於敏感操作前的確認)
-     * @param {string} username 
-     * @param {string} password 
+     * @param {string} username
+     * @param {string} password
      * @returns {Promise<boolean>}
      */
     async verifyPassword(username, password) {
@@ -112,9 +152,9 @@ class AuthService {
 
     /**
      * 修改使用者密碼
-     * @param {string} username 
-     * @param {string} oldPassword 
-     * @param {string} newPassword 
+     * @param {string} username
+     * @param {string} oldPassword
+     * @param {string} newPassword
      * @returns {Promise<boolean>}
      */
     async changePassword(username, oldPassword, newPassword) {
@@ -147,7 +187,7 @@ class AuthService {
 
         // 4. 寫入
         await this.systemWriter.updatePassword(user.rowIndex, newHash);
-        
+
         // 5. 清除快取
         if (this.systemReader.cache && this.systemReader.cache['users']) {
             delete this.systemReader.cache['users'];
