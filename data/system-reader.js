@@ -1,9 +1,10 @@
 /**
  * data/system-reader.js
  * 專門負責讀取系統級資料的類別 (系統設定、使用者)
- * * @version 5.0.2 (Phase B - Encapsulation Getter)
- * @date 2026-01-22
- * @description 新增 getLastWriteTimestamp 以支援 SystemService 存取狀態。
+ * * @version HOTFIX-20260126
+ * @date 2026-01-26
+ * @reason Temporary Compatibility Adapter for Legacy Modules
+ * @description 恢復 getSystemConfig 介面以支援舊模組 (Dashboard, Product)，但內部轉接至 Raw API。
  */
 
 const BaseReader = require('./base-reader');
@@ -18,7 +19,7 @@ class SystemReader extends BaseReader {
     }
 
     /**
-     * [New] 取得全域最後寫入時間戳 (封裝 Cache 存取)
+     * 取得全域最後寫入時間戳 (封裝 Cache 存取)
      * @returns {string|null} ISO String
      */
     getLastWriteTimestamp() {
@@ -26,11 +27,12 @@ class SystemReader extends BaseReader {
     }
 
     /**
-     * 取得系統設定工作表內容
-     * @returns {Promise<object>}
+     * [Standard A] 取得系統設定原始資料
+     * 僅回傳二維陣列，不處理任何業務規則
+     * @returns {Promise<Array<Array<string>>>} Raw rows
      */
-    async getSystemConfig() {
-        const cacheKey = 'systemConfig';
+    async getSystemConfigRaw() {
+        const cacheKey = 'systemConfigRaw';
         const now = Date.now();
         
         if (this.cache[cacheKey] && this.cache[cacheKey].data && (now - this.cache[cacheKey].timestamp < this.CACHE_DURATION)) {
@@ -44,59 +46,77 @@ class SystemReader extends BaseReader {
             });
             
             const rows = response.data.values || [];
-            const settings = {};
-            
-            if (!settings['事件類型']) {
-                settings['事件類型'] = [
-                    { value: 'general', note: '一般', order: 1, color: '#6c757d' },
-                    { value: 'iot', note: 'IOT', order: 2, color: '#007bff' },
-                    { value: 'dt', note: 'DT', order: 3, color: '#28a745' },
-                    { value: 'dx', note: 'DX', order: 4, color: '#ffc107' },
-                    { value: 'legacy', note: '舊事件', order: 5, color: '#dc3545' }
-                ];
-            }
-            if (!settings['日曆篩選規則']) settings['日曆篩選規則'] = []; 
-            
-            if (rows.length > 1) {
-                rows.slice(1).forEach(row => {
-                    const [type, item, order, enabled, note, color, value2, value3, category] = row;
-                    
-                    if (enabled === 'TRUE' && type && item) {
-                        if (!settings[type]) settings[type] = [];
-                        
-                        const exists = settings[type].find(i => i.value === item);
-                        if (exists) {
-                            exists.note = note || item;
-                            exists.order = parseInt(order) || 99;
-                        } else {
-                            settings[type].push({
-                                value: item,
-                                note: note || item,
-                                order: parseInt(order) || 99,
-                                color: color || null,
-                                value2: value2 || null, 
-                                value3: value3 || null, 
-                                category: category || '其他' 
-                            });
-                        }
-                    }
-                });
-            }
-            
-            Object.keys(settings).forEach(type => settings[type].sort((a, b) => a.order - b.order));
-            
-            this.cache[cacheKey] = { data: settings, timestamp: now };
-            return settings;
+            this.cache[cacheKey] = { data: rows, timestamp: now };
+            return rows;
 
         } catch (error) {
-            console.error('❌ [DataReader] 讀取系統設定失敗:', error);
-            return this.config.DEFAULT_SETTINGS || {};
+            console.error('❌ [SystemReader] 讀取系統設定失敗:', error);
+            return [];
         }
     }
 
     /**
-     * 取得使用者名冊
-     * @returns {Promise<Array<object>>}
+     * [HOTFIX / ADAPTER] 向下相容的系統設定讀取方法
+     * 目的：防止尚未重構的模組 (如 DashboardService, ProductService) 因呼叫舊 API 而崩潰
+     * 實作：呼叫 getSystemConfigRaw() 並於此處套用最小必要的 defaults/sort 邏輯
+     * @deprecated 請儘速遷移至 SystemService.getSystemConfig()
+     */
+    async getSystemConfig() {
+        console.warn('⚠️ [Deprecation] SystemReader.getSystemConfig() is deprecated. Call SystemService instead.');
+        
+        const rows = await this.getSystemConfigRaw();
+        
+        // 暫時性邏輯：為了滿足舊模組對資料結構的期望，在此處重複 Service 層的處理邏輯
+        const settings = {
+            '事件類型': [
+                { value: 'general', note: '一般', order: 1, color: '#6c757d' },
+                { value: 'iot', note: 'IOT', order: 2, color: '#007bff' },
+                { value: 'dt', note: 'DT', order: 3, color: '#28a745' },
+                { value: 'dx', note: 'DX', order: 4, color: '#ffc107' },
+                { value: 'legacy', note: '舊事件', order: 5, color: '#dc3545' }
+            ],
+            '日曆篩選規則': []
+        };
+        
+        if (rows.length > 1) {
+            rows.slice(1).forEach(row => {
+                const [type, item, order, enabled, note, color, value2, value3, category] = row;
+                
+                if (enabled === 'TRUE' && type && item) {
+                    if (!settings[type]) settings[type] = [];
+                    
+                    const exists = settings[type].find(i => i.value === item);
+                    if (exists) {
+                        exists.note = note || item;
+                        exists.order = parseInt(order) || 99;
+                    } else {
+                        settings[type].push({
+                            value: item,
+                            note: note || item,
+                            order: parseInt(order) || 99,
+                            color: color || null,
+                            value2: value2 || null, 
+                            value3: value3 || null, 
+                            category: category || '其他' 
+                        });
+                    }
+                }
+            });
+        }
+        
+        // 排序邏輯
+        Object.keys(settings).forEach(type => {
+            if (Array.isArray(settings[type])) {
+                settings[type].sort((a, b) => a.order - b.order);
+            }
+        });
+        
+        return settings;
+    }
+
+    /**
+     * [Standard A] 取得使用者名冊
+     * 允許 Mapping 產生 rowIndex，但不得包含業務篩選邏輯
      */
     async getUsers() {
         const cacheKey = 'users';
@@ -137,8 +157,39 @@ class SystemReader extends BaseReader {
             return allUsers;
 
         } catch (error) {
-            console.error('❌ [DataReader] 讀取使用者名冊失敗:', error.message);
+            console.error('❌ [SystemReader] 讀取使用者名冊失敗:', error.message);
             return [];
+        }
+    }
+
+    /**
+     * [New] 取得指定 Sheet Title 的 SheetId (Integer)
+     */
+    async getTabId(sheetTitle) {
+        let targetSpreadsheetId = this.targetSpreadsheetId;
+        // 特例處理：使用者名冊可能在 Auth Sheet
+        if (sheetTitle === '使用者名冊' && this.config.IDS.AUTH) {
+            targetSpreadsheetId = this.config.IDS.AUTH;
+        }
+
+        const cacheKey = `sheetId_${targetSpreadsheetId}_${sheetTitle}`;
+        if (this.cache[cacheKey]) return this.cache[cacheKey];
+
+        try {
+            const response = await this.sheets.spreadsheets.get({
+                spreadsheetId: targetSpreadsheetId,
+                fields: 'sheets.properties.title,sheets.properties.sheetId',
+            });
+
+            const sheet = response.data.sheets.find(s => s.properties.title === sheetTitle);
+            if (sheet) {
+                this.cache[cacheKey] = sheet.properties.sheetId;
+                return sheet.properties.sheetId;
+            }
+            return null;
+        } catch (error) {
+            console.error(`❌ [SystemReader] 無法取得 SheetId: ${sheetTitle}`, error);
+            return null;
         }
     }
 }
