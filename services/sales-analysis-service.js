@@ -1,8 +1,8 @@
 /**
  * services/sales-analysis-service.js
  * 銷售分析服務
- * * @version 5.0.0 (Phase 5 Refactoring)
- * @date 2026-01-09
+ * * @version 5.0.1 (Phase 5 Refactoring - Response Shape Fix)
+ * @date 2026-01-27
  * @description 負責處理成交金額、銷售渠道分析與產品組合統計。
  * 依賴注入：OpportunityReader, SystemReader, Config
  */
@@ -67,9 +67,6 @@ class SalesAnalysisService {
                 value = parseFloat(String(deal.opportunityValue).replace(/,/g, '')) || 0;
             }
             
-            // 處理幣別 (假設 VALUE_TYPE 欄位存在，若無則預設 TWD)
-            // 這裡簡化處理，若有匯率需求需在此擴充
-            
             return {
                 ...deal,
                 numericValue: value
@@ -87,7 +84,8 @@ class SalesAnalysisService {
             byProduct: this._analyzeProducts(processedDeals),
             
             // 原始清單 (供前端表格使用)
-            details: processedDeals.map(d => ({
+            // ★ 修正：對齊前端預期 key
+            wonDeals: processedDeals.map(d => ({
                 name: d.opportunityName,
                 client: d.customerCompany,
                 value: d.numericValue,
@@ -111,7 +109,7 @@ class SalesAnalysisService {
         return Object.entries(stats).map(([name, val]) => ({
             name,
             y: val,
-            color: colorMap[name] || undefined // 若無設定顏色則由前端決定
+            color: colorMap[name] || undefined
         })).sort((a, b) => b.y - a.y);
     }
 
@@ -145,7 +143,6 @@ class SalesAnalysisService {
                     }
                 }
             } catch (e) {
-                // 如果不是 JSON，嘗試簡單字串分割
                 if (typeof deal.potentialSpecification === 'string') {
                     const name = deal.potentialSpecification.trim();
                     if (name) {
