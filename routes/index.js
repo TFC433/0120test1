@@ -33,8 +33,6 @@ const calendarRoutes = require('./calendar.routes');
 router.use('/auth', authRoutes);
 
 // ★★★ 關鍵修正：LINE 路由必須移出標準 Auth 保護區 ★★★
-// 因為 LINE LIFF 傳送的是 LINE ID Token，標準 JWT Middleware 會驗證失敗。
-// 我們將驗證邏輯移回 line-leads.controller.js 內部自行處理。
 router.use('/line', lineLeadsRoutes);
 
 // Legacy: 名片預覽
@@ -54,7 +52,12 @@ router.use('/companies', companyRoutes);
 router.use('/opportunities', opportunityRoutes);
 router.use('/products', productRoutes);
 router.use('/business/weekly', weeklyRoutes);
+
+// ✅ 原本路由
 router.use('/sales', salesRoutes);
+// ✅ 相容前端用的 alias（不動前端）
+router.use('/sales-analysis', salesRoutes);
+
 router.use('/interactions', interactionRoutes);
 router.use('/events', eventRoutes);
 router.use('/calendar', calendarRoutes);

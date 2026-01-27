@@ -23,19 +23,19 @@ module.exports = {
 
         // 2. 原始資料/暫存區 (High Frequency: OCR, Line Leads)
         // 若環境變數未設定 RAW_DATA_ID，暫時使用 CORE ID (向下相容方便測試)
-        RAW: process.env.RAW_DATA_SPREADSHEET_ID || process.env.SPREADSHEET_ID,
+        RAW: process.env.RAW_DATA_SPREADSHEET_ID,
 
         // 3. 系統設定 (Configuration: 下拉選單, 參數)
         // 這是我們第一個要實體分離的目標
-        SYSTEM: process.env.SYSTEM_SETTING_SPREADSHEET_ID || process.env.SPREADSHEET_ID,
+        SYSTEM: process.env.SYSTEM_SETTING_SPREADSHEET_ID,
 
         // 4. 權限與使用者 (Security: User, Auth)
         // 使用既有的 AUTH_SPREADSHEET_ID
-        AUTH: process.env.AUTH_SPREADSHEET_ID || process.env.SPREADSHEET_ID,
+        AUTH: process.env.AUTH_SPREADSHEET_ID,
 
         // 5. 市場商品資料 (Domain: Products)
         // 使用既有的 MARKET_PRODUCT_SHEET_ID
-        PRODUCT: process.env.MARKET_PRODUCT_SHEET_ID || process.env.SPREADSHEET_ID
+        PRODUCT: process.env.MARKET_PRODUCT_SHEET_ID
     },
 
     // ============================================================
@@ -56,7 +56,7 @@ module.exports = {
 
     // --- 保留舊有設定以供尚未重構的模組讀取 (Legacy Support) ---
     SPREADSHEET_ID: process.env.SPREADSHEET_ID,
-    AUTH_SPREADSHEET_ID: process.env.AUTH_SPREADSHEET_ID || process.env.SPREADSHEET_ID,
+    AUTH_SPREADSHEET_ID: process.env.AUTH_SPREADSHEET_ID,
     MARKET_PRODUCT_SHEET_ID: process.env.MARKET_PRODUCT_SHEET_ID,
     
     // Google Drive 設定

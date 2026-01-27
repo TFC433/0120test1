@@ -112,17 +112,21 @@ class OpportunityService {
      */
     async getOpportunityDetails(opportunityId) {
         try {
+            // ✅ Fix: ContactReader does not have getLinkedContacts()
+            // Use Raw Data from getAllOppContactLinks() + getContactList() and JOIN in Service layer
             const [
                 allOpportunities, 
                 interactionsFromCache, 
                 eventLogsFromCache, 
-                linkedContactsFromCache, 
+                allLinks,
+                allOfficialContacts,
                 allPotentialContacts
             ] = await Promise.all([
                 this.opportunityReader.getOpportunities(),
                 this.interactionReader.getInteractions(),
                 this.eventLogReader.getEventLogs(),
-                this.contactReader.getLinkedContacts(opportunityId),
+                this.contactReader.getAllOppContactLinks(),
+                this.contactReader.getContactList(),
                 this.contactReader.getContacts()
             ]);
             
@@ -130,6 +134,38 @@ class OpportunityService {
             if (!opportunityInfo) {
                 throw new Error(`找不到機會ID為 ${opportunityId} 的案件`);
             }
+
+            // --- Build linked contacts (JOIN links + official contacts) ---
+            const safeGet = (obj, keys) => {
+                for (const k of keys) {
+                    if (obj && obj[k] !== undefined && obj[k] !== null && obj[k] !== '') return obj[k];
+                }
+                return undefined;
+            };
+
+            const normalizeStr = (v) => (v === undefined || v === null) ? '' : String(v).trim();
+
+            const linkedContactsFromCache = (allLinks || [])
+                .filter(link => {
+                    const linkOppId = normalizeStr(safeGet(link, ['opportunityId', 'oppId', 'opportunity_id']));
+                    if (!linkOppId) return false;
+
+                    const statusVal = normalizeStr(safeGet(link, ['status', 'linkStatus', 'state'])).toLowerCase();
+                    const isActive = !statusVal || statusVal === 'active'; // if status missing, treat as active (legacy tolerance)
+
+                    return linkOppId === normalizeStr(opportunityId) && isActive;
+                })
+                .map(link => {
+                    const linkContactId = normalizeStr(safeGet(link, ['contactId', 'id', 'contact_id']));
+                    if (!linkContactId) return null;
+
+                    const contact = (allOfficialContacts || []).find(c => normalizeStr(c.contactId) === linkContactId);
+                    if (!contact) return null;
+
+                    const linkId = safeGet(link, ['linkId', 'id', 'rowId', 'rowIndex']);
+                    return { ...contact, linkId: linkId };
+                })
+                .filter(Boolean);
             
             // 互動紀錄排序
             const interactions = interactionsFromCache
